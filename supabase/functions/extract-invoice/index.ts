@@ -107,115 +107,154 @@ const json = (body: unknown, status = 200): Response =>
 
 // Supabase Edge Runtime provides `Deno.serve`.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
-  if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
-  }
+const D: any = (globalThis as any).Deno;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const apiKey = (globalThis as any).Deno.env.get("ANTHROPIC_API_KEY");
-  if (!apiKey) {
-    return json(
-      {
-        error:
-          "ANTHROPIC_API_KEY is not set. Run `supabase secrets set " +
-          "ANTHROPIC_API_KEY=sk-ant-…` and redeploy.",
-      },
-      500,
-    );
-  }
+D.serve(async (req: Request) => {
+  const t0 = Date.now();
+  console.log("[extract-invoice] " + req.method + " received");
 
-  let payload: Payload;
   try {
-    payload = await req.json();
-  } catch {
-    return json({ error: "Invalid JSON body" }, 400);
-  }
+    if (req.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+    if (req.method !== "POST") {
+      return json({ error: "Method not allowed" }, 405);
+    }
 
-  const { file, mediaType } = payload;
-  if (!file || typeof file !== "string") {
-    return json({ error: "Missing base64 `file` field" }, 400);
-  }
-  if (!mediaType || !ALLOWED_MEDIA.has(mediaType)) {
-    return json(
-      {
-        error:
-          "Unsupported mediaType. Allowed: " + [...ALLOWED_MEDIA].join(", "),
-      },
-      400,
+    const apiKey = D.env.get("ANTHROPIC_API_KEY");
+    if (!apiKey) {
+      console.error("[extract-invoice] ANTHROPIC_API_KEY missing");
+      return json(
+        {
+          error:
+            "ANTHROPIC_API_KEY is not set. Run `supabase secrets set " +
+            "ANTHROPIC_API_KEY=sk-ant-…` and redeploy.",
+        },
+        500,
+      );
+    }
+
+    let payload: Payload;
+    try {
+      payload = await req.json();
+    } catch (e) {
+      console.error("[extract-invoice] JSON parse failed", e);
+      return json({ error: "Invalid JSON body" }, 400);
+    }
+
+    const { file, mediaType } = payload;
+    if (!file || typeof file !== "string") {
+      return json({ error: "Missing base64 `file` field" }, 400);
+    }
+    if (!mediaType || !ALLOWED_MEDIA.has(mediaType)) {
+      return json(
+        {
+          error:
+            "Unsupported mediaType. Allowed: " + [...ALLOWED_MEDIA].join(", "),
+        },
+        400,
+      );
+    }
+    console.log(
+      "[extract-invoice] payload ok: " +
+        mediaType +
+        ", base64 len=" +
+        file.length,
     );
-  }
 
-  // Rough size guard (base64 expands by ~33%): refuse anything > ~15 MB raw.
-  if (file.length > 20_000_000) {
-    return json({ error: "File too large (max ~15MB)" }, 413);
-  }
+    if (file.length > 20_000_000) {
+      return json({ error: "File too large (max ~15MB)" }, 413);
+    }
 
-  const isPdf = mediaType === "application/pdf";
-  const sourceBlock = {
-    type: isPdf ? "document" : "image",
-    source: { type: "base64", media_type: mediaType, data: file },
-  };
+    const isPdf = mediaType === "application/pdf";
+    const sourceBlock = {
+      type: isPdf ? "document" : "image",
+      source: { type: "base64", media_type: mediaType, data: file },
+    };
 
-  const body = {
-    model: "claude-sonnet-4-5",
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
-    tools: [TOOL],
-    tool_choice: { type: "tool", name: TOOL.name },
-    messages: [
-      {
-        role: "user",
-        content: [
-          sourceBlock,
-          {
-            type: "text",
-            text:
-              "Extract this document and call record_invoice with the " +
-              "structured data.",
-          },
-        ],
-      },
-    ],
-  };
+    const body = {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      system: SYSTEM_PROMPT,
+      tools: [TOOL],
+      tool_choice: { type: "tool", name: TOOL.name },
+      messages: [
+        {
+          role: "user",
+          content: [
+            sourceBlock,
+            {
+              type: "text",
+              text:
+                "Extract this document and call record_invoice with the " +
+                "structured data.",
+            },
+          ],
+        },
+      ],
+    };
 
-  const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!anthropicRes.ok) {
-    const text = await anthropicRes.text();
-    return json(
-      { error: "Claude API error: " + text },
-      anthropicRes.status,
+    console.log("[extract-invoice] calling Anthropic…");
+    let anthropicRes: Response;
+    try {
+      anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[extract-invoice] fetch threw", msg);
+      return json({ error: "Network error calling Claude: " + msg }, 502);
+    }
+    console.log(
+      "[extract-invoice] Claude HTTP " +
+        anthropicRes.status +
+        " in " +
+        (Date.now() - t0) +
+        "ms",
     );
-  }
 
-  const data = await anthropicRes.json();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const toolUse = (data.content ?? []).find(
+    if (!anthropicRes.ok) {
+      const text = await anthropicRes.text();
+      console.error("[extract-invoice] Claude error body:", text);
+      return json(
+        { error: "Claude API error: " + text },
+        anthropicRes.status,
+      );
+    }
+
+    const data = await anthropicRes.json();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (c: any) => c?.type === "tool_use" && c?.name === TOOL.name,
-  );
-  if (!toolUse) {
-    return json(
-      {
-        error:
-          "Claude did not return a tool_use block. Raw response: " +
-          JSON.stringify(data).slice(0, 500),
-      },
-      502,
+    const toolUse = (data.content ?? []).find(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (c: any) => c?.type === "tool_use" && c?.name === TOOL.name,
     );
-  }
+    if (!toolUse) {
+      console.error(
+        "[extract-invoice] no tool_use block, raw=",
+        JSON.stringify(data).slice(0, 1000),
+      );
+      return json(
+        {
+          error:
+            "Claude did not return a tool_use block. Raw response: " +
+            JSON.stringify(data).slice(0, 500),
+        },
+        502,
+      );
+    }
 
-  return json(toolUse.input);
+    console.log("[extract-invoice] done in " + (Date.now() - t0) + "ms");
+    return json(toolUse.input);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const stack = e instanceof Error ? e.stack : undefined;
+    console.error("[extract-invoice] unhandled error:", msg, stack);
+    return json({ error: "Unhandled server error: " + msg }, 500);
+  }
 });
