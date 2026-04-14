@@ -113,7 +113,31 @@ export function Upload({ onConfirm }: Props) {
       });
 
       if (fnError) {
-        setError(fnError.message || "Edge function failed");
+        // supabase-js hides the real server error behind a generic
+        // "non-2xx" message — dig into the Response to surface it.
+        let detail = fnError.message || "Edge function failed";
+        const res = (fnError as { context?: { response?: Response } }).context
+          ?.response;
+        if (res) {
+          try {
+            const text = await res.clone().text();
+            if (text) {
+              try {
+                const parsed = JSON.parse(text);
+                if (parsed && typeof parsed === "object" && "error" in parsed) {
+                  detail = String((parsed as { error: unknown }).error);
+                } else {
+                  detail = text;
+                }
+              } catch {
+                detail = text;
+              }
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+        setError(detail);
         setStatus("idle");
         return;
       }
