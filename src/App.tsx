@@ -8,33 +8,94 @@ import { Transactions } from "./pages/Transactions";
 import { Upload } from "./pages/Upload";
 import { Reports } from "./pages/Reports";
 import { Settings } from "./pages/Settings";
+import { AuthPage } from "./pages/AuthPage";
+import { CompanySetup } from "./pages/CompanySetup";
 import { useToast } from "./hooks/useToast";
-import { makeMonthly, makeTransactions } from "./lib/mockData";
+import { useAuth } from "./hooks/useAuth";
+import { useCompany } from "./hooks/useCompany";
+import { useTransactions } from "./hooks/useTransactions";
+import { makeMonthly } from "./lib/mockData";
+import { isSupabaseConfigured } from "./lib/supabase";
 import { T } from "./theme";
 import type { PageId, Transaction } from "./types";
 
 export default function App() {
+  const auth = useAuth();
+  const { company, loading: companyLoading, create: createCompany } = useCompany(auth.session);
+
+  // Supabase not configured → run the whole app in demo mode with mocks.
+  const demoMode = !isSupabaseConfigured();
+
+  if (!demoMode && auth.loading) return <Splash label="Loading…" />;
+  if (!demoMode && !auth.session)
+    return <AuthPage onSignIn={auth.signIn} onSignUp={auth.signUp} />;
+  if (!demoMode && companyLoading) return <Splash label="Loading workspace…" />;
+  if (!demoMode && !company)
+    return (
+      <CompanySetup
+        onCreate={createCompany}
+        onSignOut={auth.signOut}
+        email={auth.session?.user.email ?? null}
+      />
+    );
+
+  return (
+    <Workspace
+      userEmail={auth.session?.user.email ?? null}
+      companyId={company?.id ?? null}
+      onSignOut={() => void auth.signOut()}
+    />
+  );
+}
+
+function Splash({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: T.bg,
+        color: T.td,
+        fontSize: 13,
+        fontFamily: "'Outfit', system-ui",
+      }}
+    >
+      <Background />
+      <div style={{ zIndex: 5 }}>{label}</div>
+    </div>
+  );
+}
+
+interface WorkspaceProps {
+  userEmail: string | null;
+  companyId: string | null;
+  onSignOut: () => void;
+}
+
+function Workspace({ userEmail, companyId, onSignOut }: WorkspaceProps) {
   const [page, setPage] = useState<PageId>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [transactions, setTransactions] = useState<Transaction[]>(() => makeTransactions());
   const monthly = useMemo(() => makeMonthly(), []);
   const { message, show } = useToast();
+  const { transactions, add, remove } = useTransactions({ companyId });
 
   const handleConfirmUpload = useCallback(
-    (tx: Transaction) => {
-      setTransactions((prev) => [tx, ...prev]);
+    async (tx: Transaction) => {
+      await add(tx);
       show("Invoice processed!");
       setPage("transactions");
     },
-    [show],
+    [add, show],
   );
 
   const handleDelete = useCallback(
-    (id: string) => {
-      setTransactions((prev) => prev.filter((x) => x.id !== id));
+    async (id: string) => {
+      await remove(id);
       show("Deleted");
     },
-    [show],
+    [remove, show],
   );
 
   const pages: Record<PageId, ReactElement> = {
@@ -70,6 +131,8 @@ export default function App() {
         onNavigate={setPage}
         open={sidebarOpen}
         onToggle={() => setSidebarOpen((v) => !v)}
+        userEmail={userEmail}
+        onSignOut={onSignOut}
       />
       <div
         style={{

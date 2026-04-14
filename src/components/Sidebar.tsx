@@ -20,9 +20,11 @@ interface Props {
   onNavigate: (p: PageId) => void;
   open: boolean;
   onToggle: () => void;
+  userEmail?: string | null;
+  onSignOut?: () => void;
 }
 
-export function Sidebar({ page, onNavigate, open, onToggle }: Props) {
+export function Sidebar({ page, onNavigate, open, onToggle, userEmail, onSignOut }: Props) {
   return (
     <div
       style={{
@@ -159,14 +161,44 @@ export function Sidebar({ page, onNavigate, open, onToggle }: Props) {
               fontSize: 14,
               fontWeight: 800,
               color: T.bg,
+              flexShrink: 0,
             }}
           >
-            A
+            {(userEmail ?? "A").charAt(0).toUpperCase()}
           </div>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Antoine</div>
-            <div style={{ fontSize: 10, color: T.td }}>PRO PLAN</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 700,
+                color: T.text,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {userEmail ?? "Antoine"}
+            </div>
+            <div style={{ fontSize: 10, color: T.td }}>
+              {userEmail ? "Signed in" : "DEMO MODE"}
+            </div>
           </div>
+          {onSignOut && userEmail && (
+            <button
+              onClick={onSignOut}
+              title="Sign out"
+              style={{
+                background: "none",
+                border: "none",
+                color: T.td,
+                cursor: "pointer",
+                fontSize: 14,
+                padding: 4,
+              }}
+            >
+              ⎋
+            </button>
+          )}
         </div>
       )}
     </div>
