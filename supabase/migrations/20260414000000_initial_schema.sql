@@ -183,22 +183,34 @@ returns trigger
 language plpgsql
 as $$
 begin
+  -- Plan Comptable Normalisé luxembourgeois (PCN 2011).
+  -- Keep this list in sync with src/lib/accounts.ts.
   insert into public.chart_of_accounts (company_id, code, label, kind) values
-    (new.id, '1200', 'Accounts Receivable',   'asset'),
-    (new.id, '4456', 'VAT Deductible',        'asset'),
-    (new.id, '4457', 'VAT Collected',         'liability'),
-    (new.id, '5120', 'Bank Account',          'asset'),
-    (new.id, '6100', 'General Expenses',      'expense'),
-    (new.id, '6110', 'Software',              'expense'),
-    (new.id, '6120', 'Rent',                  'expense'),
-    (new.id, '6130', 'Transport',             'expense'),
-    (new.id, '6140', 'Office Supplies',       'expense'),
-    (new.id, '6150', 'Marketing',             'expense'),
-    (new.id, '6160', 'Utilities',             'expense'),
-    (new.id, '6170', 'Insurance',             'expense'),
-    (new.id, '6180', 'Professional Services', 'expense'),
-    (new.id, '6190', 'Food & Dining',         'expense'),
-    (new.id, '7000', 'Sales Revenue',         'revenue');
+    -- Class 4 — Créances et dettes
+    (new.id, '401',  'Fournisseurs',                                   'liability'),
+    (new.id, '411',  'Clients',                                        'asset'),
+    (new.id, '4421', 'TVA déductible',                                 'asset'),
+    (new.id, '4425', 'TVA collectée',                                  'liability'),
+
+    -- Class 5 — Comptes financiers
+    (new.id, '5131', 'Banques — Compte courant',                       'asset'),
+    (new.id, '531',  'Caisse',                                         'asset'),
+
+    -- Class 6 — Charges d''exploitation
+    (new.id, '606',  'Achats non stockés de fournitures',              'expense'),
+    (new.id, '6051', 'Eau, gaz, électricité, combustibles',            'expense'),
+    (new.id, '6061', 'Logiciels, licences et abonnements',             'expense'),
+    (new.id, '611',  'Locations et charges locatives',                 'expense'),
+    (new.id, '613',  'Primes et cotisations d''assurance',             'expense'),
+    (new.id, '616',  'Rémunérations, commissions et honoraires',       'expense'),
+    (new.id, '621',  'Publicité, relations publiques',                 'expense'),
+    (new.id, '622',  'Missions, réceptions et frais de représentation','expense'),
+    (new.id, '623',  'Voyages et déplacements',                        'expense'),
+    (new.id, '648',  'Autres charges d''exploitation',                 'expense'),
+
+    -- Class 7 — Produits d''exploitation
+    (new.id, '705',  'Prestations de services',                        'revenue'),
+    (new.id, '707',  'Ventes de marchandises',                         'revenue');
   return new;
 end;
 $$;

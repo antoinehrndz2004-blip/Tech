@@ -2,6 +2,7 @@ import { GlassCard } from "../components/GlassCard";
 import { Badge } from "../components/Badge";
 import { ThreeScene } from "../components/ThreeScene";
 import { T } from "../theme";
+import { DEFAULT_ACCOUNTS } from "../lib/accounts";
 
 export function Settings() {
   const inputStyle = {
@@ -46,14 +47,7 @@ export function Settings() {
     { name: "FIDUNAV", description: "Lux accounting", connected: true },
   ];
 
-  const accounts = [
-    { code: "1200", label: "Accounts Receivable" },
-    { code: "4456", label: "VAT Deductible" },
-    { code: "4457", label: "VAT Collected" },
-    { code: "5120", label: "Bank Account" },
-    { code: "6100", label: "General Expenses" },
-    { code: "7000", label: "Sales Revenue" },
-  ];
+  const accounts = DEFAULT_ACCOUNTS;
 
   return (
     <div style={{ maxWidth: 660, display: "flex", flexDirection: "column", gap: 24 }}>

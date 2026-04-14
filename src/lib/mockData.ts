@@ -1,5 +1,6 @@
 import type { MonthStat, Transaction } from "../types";
 import type { Category } from "../theme";
+import { formatAccount, journalEntryFor } from "./accounts";
 
 const VENDORS = [
   "Amazon AWS",
@@ -40,6 +41,8 @@ export function makeTransactions(n = 28): Transaction[] {
     const category: Category = isRevenue
       ? "Revenue"
       : VENDOR_CATEGORIES[i % VENDOR_CATEGORIES.length];
+    const txType = isRevenue ? "revenue" : "expense";
+    const entry = journalEntryFor(txType, category);
     out.push({
       id: "t" + i,
       company: isRevenue ? CLIENTS[i % CLIENTS.length] : VENDORS[i % VENDORS.length],
@@ -51,12 +54,10 @@ export function makeTransactions(n = 28): Transaction[] {
       total: isRevenue ? amount : -amount,
       vat,
       category,
-      type: isRevenue ? "revenue" : "expense",
+      type: txType,
       status: Math.random() > 0.2 ? "verified" : "pending",
-      debit: isRevenue
-        ? "1200 - Receivables"
-        : "6" + String(Math.floor(Math.random() * 9)).padStart(3, "0") + "0 - " + category,
-      credit: isRevenue ? "7000 - Sales" : "5120 - Bank",
+      debit: formatAccount(entry.debit),
+      credit: formatAccount(entry.credit),
     });
   }
   return out.sort((a, b) => +new Date(b.date) - +new Date(a.date));

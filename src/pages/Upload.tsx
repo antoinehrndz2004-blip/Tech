@@ -10,6 +10,11 @@ import { Badge } from "../components/Badge";
 import { ThreeScene } from "../components/ThreeScene";
 import { CATEGORIES, T, type Category } from "../theme";
 import { supabase } from "../lib/supabase";
+import {
+  SYSTEM_ACCOUNTS,
+  formatAccount,
+  journalEntryFor,
+} from "../lib/accounts";
 import type { ExtractedInvoice, Transaction } from "../types";
 
 type Status = "idle" | "uploading" | "processing" | "done";
@@ -182,6 +187,7 @@ export function Upload({ onConfirm }: Props) {
 
   const confirm = useCallback(() => {
     if (!extracted) return;
+    const entry = journalEntryFor(extracted.type, extracted.category);
     const tx: Transaction = {
       id: "t" + Date.now(),
       company: extracted.company,
@@ -191,11 +197,8 @@ export function Upload({ onConfirm }: Props) {
       category: extracted.category,
       type: extracted.type,
       status: "verified",
-      debit:
-        extracted.type === "expense"
-          ? "6100 - " + extracted.category
-          : "1200 - Receivables",
-      credit: extracted.type === "expense" ? "5120 - Bank" : "7000 - Sales",
+      debit: formatAccount(entry.debit),
+      credit: formatAccount(entry.credit),
     };
     onConfirm(tx);
     setExtracted(null);
@@ -614,39 +617,7 @@ function ExtractedPanel({
           >
             Accounting Entry
           </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "32px 1fr 75px 75px",
-              gap: "8px 10px",
-              fontSize: 12,
-            }}
-          >
-            <span style={{ color: T.em, fontWeight: 800 }}>DR</span>
-            <span style={{ color: T.ts }}>
-              {extracted.type === "expense"
-                ? "6100 - " + extracted.category
-                : "1200 - Recv"}
-            </span>
-            <span style={{ fontFamily: "'IBM Plex Mono'", fontWeight: 700 }}>
-              €{extracted.total.toFixed(2)}
-            </span>
-            <span />
-            <span style={{ color: T.em, fontWeight: 800 }}>DR</span>
-            <span style={{ color: T.ts }}>4456 - VAT</span>
-            <span style={{ fontFamily: "'IBM Plex Mono'", fontWeight: 700 }}>
-              €{extracted.vat.toFixed(2)}
-            </span>
-            <span />
-            <span style={{ color: T.ro, fontWeight: 800 }}>CR</span>
-            <span style={{ color: T.ts }}>
-              {extracted.type === "expense" ? "5120 - Bank" : "7000 - Sales"}
-            </span>
-            <span />
-            <span style={{ fontFamily: "'IBM Plex Mono'", fontWeight: 700 }}>
-              €{(extracted.total + extracted.vat).toFixed(2)}
-            </span>
-          </div>
+          <AccountingEntryRows extracted={extracted} />
         </div>
       </div>
 
@@ -686,5 +657,66 @@ function ExtractedPanel({
         </button>
       </div>
     </GlassCard>
+  );
+}
+
+function AccountingEntryRows({ extracted }: { extracted: ExtractedInvoice }) {
+  const entry = journalEntryFor(extracted.type, extracted.category);
+  const vatAcc =
+    extracted.type === "expense"
+      ? SYSTEM_ACCOUNTS.vatDeductible
+      : SYSTEM_ACCOUNTS.vatCollected;
+  const total = extracted.total;
+  const vat = extracted.vat;
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "32px 1fr 90px",
+        gap: "8px 10px",
+        fontSize: 12,
+        alignItems: "center",
+      }}
+    >
+      <span style={{ color: T.em, fontWeight: 800 }}>DR</span>
+      <span style={{ color: T.ts }}>{formatAccount(entry.debit)}</span>
+      <span
+        style={{
+          fontFamily: "'IBM Plex Mono'",
+          fontWeight: 700,
+          textAlign: "right",
+        }}
+      >
+        €{total.toFixed(2)}
+      </span>
+
+      {vat > 0 && (
+        <>
+          <span style={{ color: T.em, fontWeight: 800 }}>DR</span>
+          <span style={{ color: T.ts }}>{formatAccount(vatAcc)}</span>
+          <span
+            style={{
+              fontFamily: "'IBM Plex Mono'",
+              fontWeight: 700,
+              textAlign: "right",
+            }}
+          >
+            €{vat.toFixed(2)}
+          </span>
+        </>
+      )}
+
+      <span style={{ color: T.ro, fontWeight: 800 }}>CR</span>
+      <span style={{ color: T.ts }}>{formatAccount(entry.credit)}</span>
+      <span
+        style={{
+          fontFamily: "'IBM Plex Mono'",
+          fontWeight: 700,
+          textAlign: "right",
+        }}
+      >
+        €{(total + vat).toFixed(2)}
+      </span>
+    </div>
   );
 }
