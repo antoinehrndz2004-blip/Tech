@@ -1,0 +1,222 @@
+-- =============================================================================
+-- LedgerAI initial schema
+-- Luxembourg-style accounting: companies, chart of accounts (PCN), transactions,
+-- invoices and third-party integrations. All rows are scoped per-company and
+-- protected by RLS so a user only sees data for companies they own.
+-- =============================================================================
+
+create extension if not exists "pgcrypto";
+
+-- ---------------------------------------------------------------------------
+-- Companies
+-- ---------------------------------------------------------------------------
+create table if not exists public.companies (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null references auth.users (id) on delete cascade,
+  name text not null,
+  vat_number text,
+  address text,
+  currency text not null default 'EUR',
+  created_at timestamptz not null default now()
+);
+create index if not exists companies_owner_idx on public.companies (owner_id);
+
+-- ---------------------------------------------------------------------------
+-- Chart of accounts (PCN Luxembourg defaults)
+-- ---------------------------------------------------------------------------
+do $$ begin
+  create type public.account_kind as enum (
+    'asset', 'liability', 'equity', 'revenue', 'expense'
+  );
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.chart_of_accounts (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id) on delete cascade,
+  code text not null,
+  label text not null,
+  kind public.account_kind not null,
+  unique (company_id, code)
+);
+create index if not exists coa_company_idx on public.chart_of_accounts (company_id);
+
+-- ---------------------------------------------------------------------------
+-- Invoices (uploaded files + AI-extracted data)
+-- ---------------------------------------------------------------------------
+do $$ begin
+  create type public.invoice_status as enum (
+    'uploaded', 'processing', 'extracted', 'confirmed', 'failed'
+  );
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.invoices (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id) on delete cascade,
+  file_url text,
+  status public.invoice_status not null default 'uploaded',
+  extracted jsonb,
+  confidence numeric(5, 2),
+  transaction_id uuid,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users (id) on delete set null
+);
+create index if not exists invoices_company_idx on public.invoices (company_id);
+create index if not exists invoices_status_idx on public.invoices (status);
+
+-- ---------------------------------------------------------------------------
+-- Transactions (double-entry bookings)
+-- ---------------------------------------------------------------------------
+do $$ begin
+  create type public.tx_type as enum ('expense', 'revenue');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type public.tx_status as enum ('verified', 'pending');
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.transactions (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id) on delete cascade,
+  counterparty text not null,
+  date date not null,
+  total numeric(14, 2) not null,
+  vat numeric(14, 2) not null default 0,
+  category text not null,
+  type public.tx_type not null,
+  status public.tx_status not null default 'pending',
+  debit_account text not null,
+  credit_account text not null,
+  invoice_id uuid references public.invoices (id) on delete set null,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users (id) on delete set null
+);
+create index if not exists tx_company_idx on public.transactions (company_id);
+create index if not exists tx_date_idx on public.transactions (date desc);
+create index if not exists tx_category_idx on public.transactions (category);
+
+do $$ begin
+  alter table public.invoices
+    add constraint invoices_transaction_fk
+    foreign key (transaction_id) references public.transactions (id) on delete set null;
+exception when duplicate_object then null; end $$;
+
+-- ---------------------------------------------------------------------------
+-- Third-party integrations (OpenAI, Google Vision, Banking, FIDUNAV, …)
+-- ---------------------------------------------------------------------------
+do $$ begin
+  create type public.integration_status as enum ('connected', 'setup', 'error');
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.integrations (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id) on delete cascade,
+  provider text not null,
+  status public.integration_status not null default 'setup',
+  config jsonb,
+  updated_at timestamptz not null default now(),
+  unique (company_id, provider)
+);
+
+-- ---------------------------------------------------------------------------
+-- Row-level security
+-- ---------------------------------------------------------------------------
+alter table public.companies enable row level security;
+alter table public.chart_of_accounts enable row level security;
+alter table public.invoices enable row level security;
+alter table public.transactions enable row level security;
+alter table public.integrations enable row level security;
+
+-- Helper: does the current user own this company?
+create or replace function public.is_company_owner(c uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.companies
+    where id = c and owner_id = auth.uid()
+  );
+$$;
+
+drop policy if exists "companies: owner read" on public.companies;
+create policy "companies: owner read"
+  on public.companies for select
+  using (owner_id = auth.uid());
+
+drop policy if exists "companies: owner write" on public.companies;
+create policy "companies: owner write"
+  on public.companies for all
+  using (owner_id = auth.uid())
+  with check (owner_id = auth.uid());
+
+drop policy if exists "coa: by owner" on public.chart_of_accounts;
+create policy "coa: by owner"
+  on public.chart_of_accounts for all
+  using (public.is_company_owner(company_id))
+  with check (public.is_company_owner(company_id));
+
+drop policy if exists "invoices: by owner" on public.invoices;
+create policy "invoices: by owner"
+  on public.invoices for all
+  using (public.is_company_owner(company_id))
+  with check (public.is_company_owner(company_id));
+
+drop policy if exists "transactions: by owner" on public.transactions;
+create policy "transactions: by owner"
+  on public.transactions for all
+  using (public.is_company_owner(company_id))
+  with check (public.is_company_owner(company_id));
+
+drop policy if exists "integrations: by owner" on public.integrations;
+create policy "integrations: by owner"
+  on public.integrations for all
+  using (public.is_company_owner(company_id))
+  with check (public.is_company_owner(company_id));
+
+-- ---------------------------------------------------------------------------
+-- Seed default PCN Luxembourg accounts whenever a new company is created
+-- ---------------------------------------------------------------------------
+create or replace function public.seed_default_coa()
+returns trigger
+language plpgsql
+as $$
+begin
+  -- Plan Comptable Normalisé luxembourgeois (PCN 2011).
+  -- Keep this list in sync with src/lib/accounts.ts.
+  insert into public.chart_of_accounts (company_id, code, label, kind) values
+    -- Class 4 — Créances et dettes
+    (new.id, '401',  'Fournisseurs',                                   'liability'),
+    (new.id, '411',  'Clients',                                        'asset'),
+    (new.id, '4421', 'TVA déductible',                                 'asset'),
+    (new.id, '4425', 'TVA collectée',                                  'liability'),
+
+    -- Class 5 — Comptes financiers
+    (new.id, '5131', 'Banques — Compte courant',                       'asset'),
+    (new.id, '531',  'Caisse',                                         'asset'),
+
+    -- Class 6 — Charges d''exploitation
+    (new.id, '606',  'Achats non stockés de fournitures',              'expense'),
+    (new.id, '6051', 'Eau, gaz, électricité, combustibles',            'expense'),
+    (new.id, '6061', 'Logiciels, licences et abonnements',             'expense'),
+    (new.id, '611',  'Locations et charges locatives',                 'expense'),
+    (new.id, '613',  'Primes et cotisations d''assurance',             'expense'),
+    (new.id, '616',  'Rémunérations, commissions et honoraires',       'expense'),
+    (new.id, '621',  'Publicité, relations publiques',                 'expense'),
+    (new.id, '622',  'Missions, réceptions et frais de représentation','expense'),
+    (new.id, '623',  'Voyages et déplacements',                        'expense'),
+    (new.id, '648',  'Autres charges d''exploitation',                 'expense'),
+
+    -- Class 7 — Produits d''exploitation
+    (new.id, '705',  'Prestations de services',                        'revenue'),
+    (new.id, '707',  'Ventes de marchandises',                         'revenue');
+  return new;
+end;
+$$;
+
+drop trigger if exists on_company_created on public.companies;
+create trigger on_company_created
+  after insert on public.companies
+  for each row
+  execute function public.seed_default_coa();
