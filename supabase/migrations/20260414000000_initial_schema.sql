@@ -24,9 +24,11 @@ create index if not exists companies_owner_idx on public.companies (owner_id);
 -- ---------------------------------------------------------------------------
 -- Chart of accounts (PCN Luxembourg defaults)
 -- ---------------------------------------------------------------------------
-create type public.account_kind as enum (
-  'asset', 'liability', 'equity', 'revenue', 'expense'
-);
+do $$ begin
+  create type public.account_kind as enum (
+    'asset', 'liability', 'equity', 'revenue', 'expense'
+  );
+exception when duplicate_object then null; end $$;
 
 create table if not exists public.chart_of_accounts (
   id uuid primary key default gen_random_uuid(),
@@ -41,9 +43,11 @@ create index if not exists coa_company_idx on public.chart_of_accounts (company_
 -- ---------------------------------------------------------------------------
 -- Invoices (uploaded files + AI-extracted data)
 -- ---------------------------------------------------------------------------
-create type public.invoice_status as enum (
-  'uploaded', 'processing', 'extracted', 'confirmed', 'failed'
-);
+do $$ begin
+  create type public.invoice_status as enum (
+    'uploaded', 'processing', 'extracted', 'confirmed', 'failed'
+  );
+exception when duplicate_object then null; end $$;
 
 create table if not exists public.invoices (
   id uuid primary key default gen_random_uuid(),
@@ -62,8 +66,13 @@ create index if not exists invoices_status_idx on public.invoices (status);
 -- ---------------------------------------------------------------------------
 -- Transactions (double-entry bookings)
 -- ---------------------------------------------------------------------------
-create type public.tx_type as enum ('expense', 'revenue');
-create type public.tx_status as enum ('verified', 'pending');
+do $$ begin
+  create type public.tx_type as enum ('expense', 'revenue');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type public.tx_status as enum ('verified', 'pending');
+exception when duplicate_object then null; end $$;
 
 create table if not exists public.transactions (
   id uuid primary key default gen_random_uuid(),
@@ -85,14 +94,18 @@ create index if not exists tx_company_idx on public.transactions (company_id);
 create index if not exists tx_date_idx on public.transactions (date desc);
 create index if not exists tx_category_idx on public.transactions (category);
 
-alter table public.invoices
-  add constraint invoices_transaction_fk
-  foreign key (transaction_id) references public.transactions (id) on delete set null;
+do $$ begin
+  alter table public.invoices
+    add constraint invoices_transaction_fk
+    foreign key (transaction_id) references public.transactions (id) on delete set null;
+exception when duplicate_object then null; end $$;
 
 -- ---------------------------------------------------------------------------
 -- Third-party integrations (OpenAI, Google Vision, Banking, FIDUNAV, …)
 -- ---------------------------------------------------------------------------
-create type public.integration_status as enum ('connected', 'setup', 'error');
+do $$ begin
+  create type public.integration_status as enum ('connected', 'setup', 'error');
+exception when duplicate_object then null; end $$;
 
 create table if not exists public.integrations (
   id uuid primary key default gen_random_uuid(),
@@ -127,30 +140,36 @@ as $$
   );
 $$;
 
+drop policy if exists "companies: owner read" on public.companies;
 create policy "companies: owner read"
   on public.companies for select
   using (owner_id = auth.uid());
 
+drop policy if exists "companies: owner write" on public.companies;
 create policy "companies: owner write"
   on public.companies for all
   using (owner_id = auth.uid())
   with check (owner_id = auth.uid());
 
+drop policy if exists "coa: by owner" on public.chart_of_accounts;
 create policy "coa: by owner"
   on public.chart_of_accounts for all
   using (public.is_company_owner(company_id))
   with check (public.is_company_owner(company_id));
 
+drop policy if exists "invoices: by owner" on public.invoices;
 create policy "invoices: by owner"
   on public.invoices for all
   using (public.is_company_owner(company_id))
   with check (public.is_company_owner(company_id));
 
+drop policy if exists "transactions: by owner" on public.transactions;
 create policy "transactions: by owner"
   on public.transactions for all
   using (public.is_company_owner(company_id))
   with check (public.is_company_owner(company_id));
 
+drop policy if exists "integrations: by owner" on public.integrations;
 create policy "integrations: by owner"
   on public.integrations for all
   using (public.is_company_owner(company_id))
