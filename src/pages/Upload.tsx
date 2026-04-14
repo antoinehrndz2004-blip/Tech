@@ -1,8 +1,15 @@
-import { useCallback, useState, type CSSProperties, type ReactElement } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactElement,
+} from "react";
 import { GlassCard } from "../components/GlassCard";
 import { Badge } from "../components/Badge";
 import { ThreeScene } from "../components/ThreeScene";
 import { CATEGORIES, T, type Category } from "../theme";
+import { supabase } from "../lib/supabase";
 import type { ExtractedInvoice, Transaction } from "../types";
 
 type Status = "idle" | "uploading" | "processing" | "done";
@@ -12,6 +19,8 @@ interface Props {
 }
 
 const VENDORS = ["Amazon AWS", "Google Cloud", "Microsoft Azure", "Slack", "Adobe"];
+const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const ACCEPT = "image/jpeg,image/png,image/webp,image/gif,application/pdf";
 
 function randomInvoice(): ExtractedInvoice {
   const total = Math.round((Math.random() * 800 + 50) * 100) / 100;
@@ -28,20 +37,124 @@ function randomInvoice(): ExtractedInvoice {
   };
 }
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("Unexpected reader result"));
+        return;
+      }
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function normalizeExtraction(raw: unknown): ExtractedInvoice | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const company = typeof r.company === "string" ? r.company : "";
+  const date = typeof r.date === "string" ? r.date : "";
+  const total = typeof r.total === "number" ? r.total : Number(r.total) || 0;
+  const vat = typeof r.vat === "number" ? r.vat : Number(r.vat) || 0;
+  const category = (
+    CATEGORIES as readonly string[]
+  ).includes(r.category as string)
+    ? (r.category as Category)
+    : "Other";
+  const type = r.type === "revenue" ? "revenue" : "expense";
+  const conf =
+    typeof r.conf === "number" ? Math.round(r.conf) : Number(r.conf) || 80;
+  if (!company && !date && !total) return null;
+  return { company, date, total, vat, category, type, conf };
+}
+
 export function Upload({ onConfirm }: Props) {
   const [status, setStatus] = useState<Status>("idle");
   const [extracted, setExtracted] = useState<ExtractedInvoice | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const simulate = useCallback(() => {
+  const openPicker = useCallback(() => inputRef.current?.click(), []);
+
+  const processFile = useCallback(async (file: File) => {
+    setError(null);
+    if (file.size > MAX_BYTES) {
+      setError(
+        "File is " +
+          (file.size / 1024 / 1024).toFixed(1) +
+          " MB — max 10 MB.",
+      );
+      return;
+    }
+    const mediaType = file.type || "application/pdf";
     setStatus("uploading");
-    setTimeout(() => {
+    try {
+      const base64 = await fileToBase64(file);
       setStatus("processing");
-      setTimeout(() => {
+
+      // Demo mode fallback — no Supabase configured, fake the result.
+      if (!supabase) {
+        await new Promise((r) => setTimeout(r, 1200));
         setExtracted(randomInvoice());
         setStatus("done");
-      }, 2800);
-    }, 1400);
+        return;
+      }
+
+      const { data, error: fnError } = await supabase.functions.invoke<
+        Record<string, unknown>
+      >("extract-invoice", {
+        body: { file: base64, mediaType },
+      });
+
+      if (fnError) {
+        setError(fnError.message || "Edge function failed");
+        setStatus("idle");
+        return;
+      }
+      if (data && typeof data === "object" && "error" in data) {
+        setError(String((data as { error: unknown }).error));
+        setStatus("idle");
+        return;
+      }
+      const normalized = normalizeExtraction(data);
+      if (!normalized) {
+        setError("Claude returned an empty extraction. Try a clearer scan.");
+        setStatus("idle");
+        return;
+      }
+      setExtracted(normalized);
+      setStatus("done");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      setStatus("idle");
+    }
   }, []);
+
+  const onFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const f = e.target.files?.[0];
+      e.target.value = "";
+      if (f) void processFile(f);
+    },
+    [processFile],
+  );
+
+  const onDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      setDragOver(false);
+      const f = e.dataTransfer.files?.[0];
+      if (f) void processFile(f);
+    },
+    [processFile],
+  );
 
   const confirm = useCallback(() => {
     if (!extracted) return;
@@ -103,6 +216,14 @@ export function Upload({ onConfirm }: Props) {
         margin: extracted ? "0" : "0 auto",
       }}
     >
+      <input
+        ref={inputRef}
+        type="file"
+        accept={ACCEPT}
+        style={{ display: "none" }}
+        onChange={onFileChange}
+      />
+
       <GlassCard style={{ padding: 0, overflow: "hidden" }}>
         <div
           style={{ height: 200, position: "relative", borderBottom: "1px solid " + T.gb }}
@@ -111,29 +232,38 @@ export function Upload({ onConfirm }: Props) {
           <div style={{ position: "absolute", bottom: 20, left: 24, zIndex: 2 }}>
             <div style={{ fontSize: 20, fontWeight: 800, color: T.text }}>Scan Invoice</div>
             <div style={{ fontSize: 12, color: T.td, marginTop: 3 }}>
-              Upload image or PDF — AI extracts everything
+              Upload image or PDF — Claude Vision extracts everything
             </div>
           </div>
         </div>
         <div style={{ padding: 24 }}>
           {status === "idle" && (
             <div
-              onClick={simulate}
+              onClick={openPicker}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={onDrop}
               style={{
-                border: "2px dashed " + T.gb,
+                border: "2px dashed " + (dragOver ? T.gold : T.gb),
                 borderRadius: 16,
                 padding: "44px 20px",
                 textAlign: "center",
                 cursor: "pointer",
-                background: "rgba(255,255,255,0.01)",
+                background: dragOver ? T.gg : "rgba(255,255,255,0.01)",
+                transition: "border-color 0.2s, background 0.2s",
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.borderColor = T.gold;
                 e.currentTarget.style.background = T.gg;
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = T.gb;
-                e.currentTarget.style.background = "rgba(255,255,255,0.01)";
+                if (!dragOver) {
+                  e.currentTarget.style.borderColor = T.gb;
+                  e.currentTarget.style.background = "rgba(255,255,255,0.01)";
+                }
               }}
             >
               <div
@@ -156,12 +286,12 @@ export function Upload({ onConfirm }: Props) {
               <div style={{ fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 6 }}>
                 Drop invoice here or click to upload
               </div>
-              <div style={{ fontSize: 12, color: T.td }}>JPG, PNG, PDF — Max 10MB</div>
+              <div style={{ fontSize: 12, color: T.td }}>JPG, PNG, WebP, PDF — Max 10MB</div>
               <div style={{ display: "flex", justifyContent: "center", gap: 10, marginTop: 22 }}>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    simulate();
+                    openPicker();
                   }}
                   style={{
                     padding: "10px 22px",
@@ -179,7 +309,7 @@ export function Upload({ onConfirm }: Props) {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    simulate();
+                    openPicker();
                   }}
                   style={{
                     padding: "10px 22px",
@@ -219,7 +349,7 @@ export function Upload({ onConfirm }: Props) {
                 {status === "uploading" ? "△" : "◈"}
               </div>
               <div style={{ fontSize: 16, fontWeight: 700, color: T.text, marginBottom: 6 }}>
-                {status === "uploading" ? "Uploading…" : "AI analyzing…"}
+                {status === "uploading" ? "Uploading…" : "Claude is reading your invoice…"}
               </div>
               <div
                 style={{
@@ -245,6 +375,23 @@ export function Upload({ onConfirm }: Props) {
             </div>
           )}
 
+          {error && (
+            <div
+              style={{
+                marginTop: 16,
+                padding: "12px 16px",
+                borderRadius: 12,
+                fontSize: 12,
+                color: T.ro,
+                background: T.rg,
+                border: "1px solid rgba(244,63,94,0.25)",
+                lineHeight: 1.5,
+              }}
+            >
+              {error}
+            </div>
+          )}
+
           <div
             style={{
               marginTop: 24,
@@ -267,10 +414,10 @@ export function Upload({ onConfirm }: Props) {
               How it works
             </div>
             {[
-              { n: "01", t: "OCR", d: "Read text from image" },
-              { n: "02", t: "AI Parse", d: "Structure into JSON" },
-              { n: "03", t: "Classify", d: "Category & VAT" },
-              { n: "04", t: "Entry", d: "Debit/credit" },
+              { n: "01", t: "Upload", d: "Image or PDF, up to 10MB" },
+              { n: "02", t: "Claude Vision", d: "Reads every line of your invoice" },
+              { n: "03", t: "Classify", d: "Category, VAT, type" },
+              { n: "04", t: "Review", d: "Edit anything, then confirm" },
             ].map((s) => (
               <div
                 key={s.n}
@@ -313,6 +460,7 @@ export function Upload({ onConfirm }: Props) {
           onCancel={() => {
             setExtracted(null);
             setStatus("idle");
+            setError(null);
           }}
           inputStyle={inputStyle}
           label={label}
