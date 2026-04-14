@@ -3,30 +3,65 @@ import { GlassCard } from "../components/GlassCard";
 import { ThreeScene } from "../components/ThreeScene";
 import { T } from "../theme";
 import type { Transaction } from "../types";
+import { downloadCsv, toCsv } from "../lib/csv";
 
 interface Props {
   transactions: Transaction[];
 }
 
 export function Reports({ transactions }: Props) {
-  const { rev, exp, prof, vat, byCategory } = useMemo(() => {
+  const { rev, exp, prof, vatCollected, vatDeductible, vatNet, byCategory } = useMemo(() => {
     let rev = 0;
     let exp = 0;
-    let vat = 0;
+    let vatCollected = 0;
+    let vatDeductible = 0;
     const m: Record<string, number> = {};
     transactions.forEach((t) => {
-      if (t.type === "revenue") rev += t.total;
-      else {
+      if (t.type === "revenue") {
+        rev += t.total;
+        vatCollected += t.vat;
+      } else {
         exp += Math.abs(t.total);
+        vatDeductible += t.vat;
         m[t.category] = (m[t.category] ?? 0) + Math.abs(t.total);
       }
-      vat += t.vat;
     });
     const byCategory = Object.keys(m)
       .map((k) => ({ name: k, value: m[k] }))
       .sort((a, b) => b.value - a.value);
-    return { rev, exp, prof: rev - exp, vat, byCategory };
+    return {
+      rev,
+      exp,
+      prof: rev - exp,
+      vatCollected,
+      vatDeductible,
+      vatNet: vatCollected - vatDeductible,
+      byCategory,
+    };
   }, [transactions]);
+
+  const exportCsv = () => {
+    const rows: (readonly unknown[])[] = [
+      ["Section", "Label", "Amount (EUR)"],
+      ["Revenue", "Sales Revenue", rev.toFixed(2)],
+      ["Revenue", "Total Revenue", rev.toFixed(2)],
+      ...byCategory.map((c) => ["Expenses", c.name, c.value.toFixed(2)] as const),
+      ["Expenses", "Total Expenses", exp.toFixed(2)],
+      ["Result", "Net Profit / (Loss)", prof.toFixed(2)],
+      [],
+      ["VAT", "Collected (output, sales)", vatCollected.toFixed(2)],
+      ["VAT", "Deductible (input, purchases)", vatDeductible.toFixed(2)],
+      ["VAT", "Net VAT Due", vatNet.toFixed(2)],
+    ];
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`ledgerai-report-${stamp}.csv`, toCsv(rows));
+  };
+
+  const exportPdf = () => {
+    // Use the browser's built-in print-to-PDF. The page is designed to print
+    // legibly as-is; users can "Save as PDF" from the print dialog.
+    window.print();
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -57,24 +92,47 @@ export function Reports({ transactions }: Props) {
             H1 2026 Reports
           </div>
         </div>
-        <button
+        <div
           style={{
             position: "absolute",
             bottom: 24,
             right: 28,
             zIndex: 2,
-            padding: "10px 22px",
-            borderRadius: 12,
-            border: "1px solid " + T.gbd,
-            background: T.gg,
-            color: T.gold,
-            fontSize: 12,
-            fontWeight: 700,
-            cursor: "pointer",
+            display: "flex",
+            gap: 10,
           }}
         >
-          ↓ Export PDF
-        </button>
+          <button
+            onClick={exportCsv}
+            style={{
+              padding: "10px 18px",
+              borderRadius: 12,
+              border: "1px solid " + T.gb,
+              background: "rgba(255,255,255,0.04)",
+              color: T.text,
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            ↓ CSV
+          </button>
+          <button
+            onClick={exportPdf}
+            style={{
+              padding: "10px 22px",
+              borderRadius: 12,
+              border: "1px solid " + T.gbd,
+              background: T.gg,
+              color: T.gold,
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            ↓ Export PDF
+          </button>
+        </div>
       </GlassCard>
 
       <GlassCard style={{ padding: 0, overflow: "hidden" }}>
@@ -94,9 +152,15 @@ export function Reports({ transactions }: Props) {
         <SectionHeader color={T.ro} bg={T.rg}>
           Expenses
         </SectionHeader>
-        {byCategory.slice(0, 5).map((c) => (
-          <Row key={c.name} label={c.name} value={c.value} />
-        ))}
+        {byCategory.length === 0 ? (
+          <div style={{ padding: "18px 28px", fontSize: 12, color: T.td }}>
+            No expenses recorded yet.
+          </div>
+        ) : (
+          byCategory.slice(0, 5).map((c) => (
+            <Row key={c.name} label={c.name} value={c.value} />
+          ))
+        )}
         <Row label="Total Expenses" value={exp} emphasize color={T.ro} />
         <div
           style={{
@@ -125,9 +189,24 @@ export function Reports({ transactions }: Props) {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
         {[
-          { label: "VAT Collected", value: Math.round(vat * 0.6), color: T.em },
-          { label: "VAT Deductible", value: Math.round(vat * 0.4), color: T.ro },
-          { label: "Net VAT Due", value: Math.round(vat * 0.2), color: T.am },
+          {
+            label: "VAT Collected",
+            sub: "on sales (output)",
+            value: vatCollected,
+            color: T.em,
+          },
+          {
+            label: "VAT Deductible",
+            sub: "on purchases (input)",
+            value: vatDeductible,
+            color: T.bl,
+          },
+          {
+            label: "Net VAT Due",
+            sub: vatNet >= 0 ? "to pay" : "to reclaim",
+            value: vatNet,
+            color: vatNet >= 0 ? T.am : T.em,
+          },
         ].map((x) => (
           <GlassCard key={x.label} hover style={{ padding: 24, textAlign: "center" }}>
             <div
@@ -151,7 +230,23 @@ export function Reports({ transactions }: Props) {
                 letterSpacing: -1,
               }}
             >
-              €{x.value.toLocaleString()}
+              {x.value < 0 ? "−" : ""}€
+              {Math.abs(x.value).toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                color: T.td,
+                marginTop: 8,
+                fontWeight: 600,
+                letterSpacing: 1,
+                textTransform: "uppercase",
+              }}
+            >
+              {x.sub}
             </div>
           </GlassCard>
         ))}

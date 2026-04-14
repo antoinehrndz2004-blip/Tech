@@ -4,6 +4,7 @@ import { Badge } from "../components/Badge";
 import { CATEGORIES, T } from "../theme";
 import type { Transaction, TxType } from "../types";
 import { signedEuro } from "../lib/format";
+import { downloadCsv, toCsv } from "../lib/csv";
 
 interface Props {
   transactions: Transaction[];
@@ -27,6 +28,33 @@ export function Transactions({ transactions, onDelete }: Props) {
       }),
     [transactions, search, typeFilter, categoryFilter],
   );
+
+  const exportCsv = () => {
+    const header = [
+      "Date",
+      "Counterparty",
+      "Type",
+      "Category",
+      "Debit account",
+      "Credit account",
+      "Amount (EUR)",
+      "VAT (EUR)",
+      "Status",
+    ];
+    const rows = filtered.map((t) => [
+      t.date,
+      t.company,
+      t.type,
+      t.category,
+      t.debit,
+      t.credit,
+      t.total.toFixed(2),
+      t.vat.toFixed(2),
+      t.status,
+    ]);
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`ledgerai-transactions-${stamp}.csv`, toCsv([header, ...rows]));
+  };
 
   const inputBase = {
     background: "rgba(255,255,255,0.03)",
@@ -109,6 +137,23 @@ export function Transactions({ transactions, onDelete }: Props) {
         >
           {filtered.length} entries
         </span>
+        <button
+          onClick={exportCsv}
+          disabled={filtered.length === 0}
+          style={{
+            padding: "10px 16px",
+            borderRadius: 12,
+            border: "1px solid " + T.gbd,
+            background: T.gg,
+            color: T.gold,
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: filtered.length === 0 ? "not-allowed" : "pointer",
+            opacity: filtered.length === 0 ? 0.4 : 1,
+          }}
+        >
+          ↓ Export CSV
+        </button>
       </GlassCard>
 
       <GlassCard style={{ overflow: "hidden" }}>

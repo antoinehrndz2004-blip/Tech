@@ -12,7 +12,7 @@ import { AuthPage } from "./pages/AuthPage";
 import { CompanySetup } from "./pages/CompanySetup";
 import { useToast } from "./hooks/useToast";
 import { useAuth } from "./hooks/useAuth";
-import { useCompany } from "./hooks/useCompany";
+import { useCompany, type Company, type CompanyInput } from "./hooks/useCompany";
 import { useTransactions } from "./hooks/useTransactions";
 import { makeMonthly } from "./lib/mockData";
 import { isSupabaseConfigured } from "./lib/supabase";
@@ -21,7 +21,8 @@ import type { PageId, Transaction } from "./types";
 
 export default function App() {
   const auth = useAuth();
-  const { company, loading: companyLoading, create: createCompany } = useCompany(auth.session);
+  const { company, loading: companyLoading, create: createCompany, update: updateCompany } =
+    useCompany(auth.session);
 
   // Supabase not configured → run the whole app in demo mode with mocks.
   const demoMode = !isSupabaseConfigured();
@@ -42,7 +43,8 @@ export default function App() {
   return (
     <Workspace
       userEmail={auth.session?.user.email ?? null}
-      companyId={company?.id ?? null}
+      company={company}
+      onUpdateCompany={updateCompany}
       onSignOut={() => void auth.signOut()}
     />
   );
@@ -70,15 +72,19 @@ function Splash({ label }: { label: string }) {
 
 interface WorkspaceProps {
   userEmail: string | null;
-  companyId: string | null;
+  company: Company | null;
+  onUpdateCompany: (
+    input: Partial<CompanyInput>,
+  ) => Promise<{ data: Company | null; error: unknown }>;
   onSignOut: () => void;
 }
 
-function Workspace({ userEmail, companyId, onSignOut }: WorkspaceProps) {
+function Workspace({ userEmail, company, onUpdateCompany, onSignOut }: WorkspaceProps) {
   const [page, setPage] = useState<PageId>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const monthly = useMemo(() => makeMonthly(), []);
   const { message, show } = useToast();
+  const companyId = company?.id ?? null;
   const { transactions, add, remove } = useTransactions({ companyId });
 
   const handleConfirmUpload = useCallback(
@@ -98,6 +104,19 @@ function Workspace({ userEmail, companyId, onSignOut }: WorkspaceProps) {
     [remove, show],
   );
 
+  const handleSaveCompany = useCallback(
+    async (input: Partial<CompanyInput>) => {
+      const { error } = await onUpdateCompany(input);
+      if (error) {
+        show("Could not save changes");
+        return false;
+      }
+      show("Company updated");
+      return true;
+    },
+    [onUpdateCompany, show],
+  );
+
   const pages: Record<PageId, ReactElement> = {
     dashboard: (
       <Dashboard
@@ -109,7 +128,7 @@ function Workspace({ userEmail, companyId, onSignOut }: WorkspaceProps) {
     transactions: <Transactions transactions={transactions} onDelete={handleDelete} />,
     upload: <Upload onConfirm={handleConfirmUpload} />,
     reports: <Reports transactions={transactions} />,
-    settings: <Settings />,
+    settings: <Settings company={company} companyId={companyId} onSave={handleSaveCompany} />,
   };
 
   return (

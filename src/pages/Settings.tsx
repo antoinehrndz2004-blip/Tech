@@ -1,10 +1,59 @@
+import { useEffect, useState } from "react";
 import { GlassCard } from "../components/GlassCard";
 import { Badge } from "../components/Badge";
 import { ThreeScene } from "../components/ThreeScene";
 import { T } from "../theme";
 import { DEFAULT_ACCOUNTS } from "../lib/accounts";
+import type { Company, CompanyInput } from "../hooks/useCompany";
+import { KNOWN_INTEGRATIONS, useIntegrations } from "../hooks/useIntegrations";
 
-export function Settings() {
+interface Props {
+  company: Company | null;
+  companyId: string | null;
+  onSave: (input: Partial<CompanyInput>) => Promise<boolean>;
+}
+
+export function Settings({ company, companyId, onSave }: Props) {
+  const [form, setForm] = useState<CompanyInput>(() => ({
+    name: company?.name ?? "",
+    vat_number: company?.vat_number ?? "",
+    address: company?.address ?? "",
+    currency: company?.currency ?? "EUR",
+  }));
+  const [saving, setSaving] = useState(false);
+
+  // Keep form in sync if the company is (re)loaded.
+  useEffect(() => {
+    setForm({
+      name: company?.name ?? "",
+      vat_number: company?.vat_number ?? "",
+      address: company?.address ?? "",
+      currency: company?.currency ?? "EUR",
+    });
+  }, [company]);
+
+  const { integrations } = useIntegrations({ companyId });
+  const connected = new Set(integrations.filter((i) => i.status === "connected").map((i) => i.provider));
+
+  const dirty =
+    company != null &&
+    (form.name !== (company.name ?? "") ||
+      (form.vat_number ?? "") !== (company.vat_number ?? "") ||
+      (form.address ?? "") !== (company.address ?? "") ||
+      (form.currency ?? "EUR") !== company.currency);
+
+  const save = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    await onSave({
+      name: form.name.trim(),
+      vat_number: form.vat_number?.trim() || null,
+      address: form.address?.trim() || null,
+      currency: form.currency?.trim() || "EUR",
+    });
+    setSaving(false);
+  };
+
   const inputStyle = {
     width: "100%",
     padding: "12px 16px",
@@ -33,21 +82,8 @@ export function Settings() {
     </label>
   );
 
-  const companyFields = [
-    { label: "Company Name", value: "LuxDrop Logistics Sàrl" },
-    { label: "VAT Number", value: "LU12345678" },
-    { label: "Address", value: "12 Rue du Fort Bourbon, L-1249 Luxembourg" },
-    { label: "Currency", value: "EUR (€)" },
-  ];
-
-  const integrations = [
-    { name: "OpenAI API", description: "AI parsing", connected: true },
-    { name: "Google Vision", description: "OCR", connected: false },
-    { name: "Banking API", description: "Auto-import", connected: false },
-    { name: "FIDUNAV", description: "Lux accounting", connected: true },
-  ];
-
   const accounts = DEFAULT_ACCOUNTS;
+  const readOnly = company == null;
 
   return (
     <div style={{ maxWidth: 660, display: "flex", flexDirection: "column", gap: 24 }}>
@@ -73,19 +109,80 @@ export function Settings() {
       </GlassCard>
 
       <GlassCard style={{ padding: 28 }}>
-        <h3
-          style={{ margin: 0, fontSize: 16, fontWeight: 800, marginBottom: 22, color: T.text }}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 22,
+          }}
         >
-          Company Details
-        </h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          {companyFields.map((f) => (
-            <div key={f.label}>
-              {label(f.label)}
-              <input defaultValue={f.value} style={inputStyle} />
-            </div>
-          ))}
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: T.text }}>
+            Company Details
+          </h3>
+          <button
+            onClick={save}
+            disabled={!dirty || saving || readOnly}
+            style={{
+              padding: "10px 20px",
+              borderRadius: 12,
+              border: "1px solid " + T.gbd,
+              background: dirty && !saving ? T.gg : "rgba(255,255,255,0.03)",
+              color: dirty && !saving ? T.gold : T.td,
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: dirty && !saving ? "pointer" : "not-allowed",
+              opacity: dirty && !saving ? 1 : 0.6,
+            }}
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </button>
         </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <div>
+            {label("Company Name")}
+            <input
+              value={form.name}
+              disabled={readOnly}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            {label("VAT Number")}
+            <input
+              value={form.vat_number ?? ""}
+              disabled={readOnly}
+              onChange={(e) => setForm((f) => ({ ...f, vat_number: e.target.value }))}
+              placeholder="LU12345678"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            {label("Address")}
+            <input
+              value={form.address ?? ""}
+              disabled={readOnly}
+              onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))}
+              placeholder="12 Rue du Fort Bourbon, L-1249 Luxembourg"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            {label("Currency")}
+            <input
+              value={form.currency ?? ""}
+              disabled={readOnly}
+              onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+              style={inputStyle}
+            />
+          </div>
+        </div>
+        {readOnly && (
+          <div style={{ marginTop: 14, fontSize: 11, color: T.td }}>
+            Demo mode — connect Supabase to save real company data.
+          </div>
+        )}
       </GlassCard>
 
       <GlassCard style={{ padding: 28 }}>
@@ -95,28 +192,35 @@ export function Settings() {
           Integrations
         </h3>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {integrations.map((i) => (
-            <div
-              key={i.name}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                padding: "16px 20px",
-                borderRadius: 14,
-                border: "1px solid " + T.gb,
-                background: "rgba(255,255,255,0.02)",
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>{i.name}</div>
-                <div style={{ fontSize: 11, color: T.td, marginTop: 2 }}>{i.description}</div>
+          {KNOWN_INTEGRATIONS.map((i) => {
+            const isConnected = connected.has(i.provider);
+            return (
+              <div
+                key={i.provider}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "16px 20px",
+                  borderRadius: 14,
+                  border: "1px solid " + T.gb,
+                  background: "rgba(255,255,255,0.02)",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>
+                    {i.provider}
+                  </div>
+                  <div style={{ fontSize: 11, color: T.td, marginTop: 2 }}>
+                    {i.description}
+                  </div>
+                </div>
+                <Badge color={isConnected ? "green" : "amber"}>
+                  {isConnected ? "Connected" : "Setup"}
+                </Badge>
               </div>
-              <Badge color={i.connected ? "green" : "amber"}>
-                {i.connected ? "Connected" : "Setup"}
-              </Badge>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </GlassCard>
 
