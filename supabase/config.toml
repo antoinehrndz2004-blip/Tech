@@ -1,0 +1,10 @@
+# Supabase project config
+# Only fields that deviate from the defaults are set here.
+
+project_id = "yzecjdarpecwgfythezl"
+
+[functions.extract-invoice]
+# The client already authenticates the user (Supabase session) before calling
+# this function. JWT-verify at the router layer is skipped so `functions.invoke`
+# from the browser can reach the function without extra header plumbing.
+verify_jwt = false
