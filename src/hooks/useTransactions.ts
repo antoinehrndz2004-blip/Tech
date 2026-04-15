@@ -109,5 +109,20 @@ export function useTransactions({ companyId }: Options = {}) {
     [companyId],
   );
 
-  return { transactions, loading, add, remove, reload: load };
+  const updateStatus = useCallback(
+    async (id: string, status: TxStatus) => {
+      setTransactions((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, status } : t)),
+      );
+      if (!isSupabaseConfigured() || !companyId) return;
+      const { error } = await supabase!
+        .from("transactions")
+        .update({ status })
+        .eq("id", id);
+      if (error) console.error(error);
+    },
+    [companyId],
+  );
+
+  return { transactions, loading, add, remove, updateStatus, reload: load };
 }

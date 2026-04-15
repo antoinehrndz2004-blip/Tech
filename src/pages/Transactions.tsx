@@ -10,14 +10,22 @@ import { getInvoiceSignedUrl } from "../lib/supabase";
 interface Props {
   transactions: Transaction[];
   onDelete: (id: string) => void;
+  onVerify: (id: string) => void;
 }
 
 type TypeFilter = "all" | TxType;
+type StatusFilter = "all" | "pending" | "verified";
 
-export function Transactions({ transactions, onDelete }: Props) {
+export function Transactions({ transactions, onDelete, onVerify }: Props) {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+
+  const pendingCount = useMemo(
+    () => transactions.filter((t) => t.status === "pending").length,
+    [transactions],
+  );
 
   const filtered = useMemo(
     () =>
@@ -25,9 +33,10 @@ export function Transactions({ transactions, onDelete }: Props) {
         if (search && !t.company.toLowerCase().includes(search.toLowerCase())) return false;
         if (typeFilter !== "all" && t.type !== typeFilter) return false;
         if (categoryFilter !== "all" && t.category !== categoryFilter) return false;
+        if (statusFilter !== "all" && t.status !== statusFilter) return false;
         return true;
       }),
-    [transactions, search, typeFilter, categoryFilter],
+    [transactions, search, typeFilter, categoryFilter, statusFilter],
   );
 
   const openAttachment = useCallback(async (path: string) => {
@@ -137,6 +146,17 @@ export function Transactions({ transactions, onDelete }: Props) {
           ))}
           <option value="Revenue">Revenue</option>
         </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+          style={inputBase}
+        >
+          <option value="all">All Status</option>
+          <option value="pending">
+            Pending review{pendingCount > 0 ? ` (${pendingCount})` : ""}
+          </option>
+          <option value="verified">Verified</option>
+        </select>
         <span
           style={{
             fontSize: 12,
@@ -230,6 +250,26 @@ export function Transactions({ transactions, onDelete }: Props) {
                 {t.type === "revenue" ? "↑" : "↓"}
               </div>
               <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{t.company}</span>
+              {t.status === "pending" && (
+                <button
+                  onClick={() => onVerify(t.id)}
+                  title="Mark verified"
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 800,
+                    letterSpacing: 1,
+                    padding: "3px 7px",
+                    borderRadius: 6,
+                    border: "1px solid " + T.gbd,
+                    background: T.gg,
+                    color: T.gold,
+                    textTransform: "uppercase",
+                    cursor: "pointer",
+                  }}
+                >
+                  Pending ✓
+                </button>
+              )}
             </div>
             <div style={{ fontSize: 11, color: T.td, fontFamily: "'IBM Plex Mono'" }}>
               {t.date.slice(5)}

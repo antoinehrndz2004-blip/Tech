@@ -14,6 +14,7 @@ import { useToast } from "./hooks/useToast";
 import { useAuth } from "./hooks/useAuth";
 import { useCompany, type Company, type CompanyInput } from "./hooks/useCompany";
 import { useTransactions } from "./hooks/useTransactions";
+import { usePrefs } from "./hooks/usePrefs";
 import { makeMonthly } from "./lib/mockData";
 import { isSupabaseConfigured } from "./lib/supabase";
 import { T } from "./theme";
@@ -85,15 +86,43 @@ function Workspace({ userEmail, company, onUpdateCompany, onSignOut }: Workspace
   const monthly = useMemo(() => makeMonthly(), []);
   const { message, show } = useToast();
   const companyId = company?.id ?? null;
-  const { transactions, add, remove } = useTransactions({ companyId });
+  const { transactions, add, remove, updateStatus } = useTransactions({
+    companyId,
+  });
+  const { prefs, update: updatePrefs } = usePrefs();
 
   const handleConfirmUpload = useCallback(
     async (tx: Transaction) => {
       await add(tx);
-      show("Invoice processed!");
+      if (tx.status === "pending") {
+        show("Auto-posted to review queue");
+      } else {
+        show("Invoice processed!");
+      }
       setPage("transactions");
     },
     [add, show],
+  );
+
+  const handleBatchAutoPost = useCallback(
+    async (txs: Transaction[]) => {
+      for (const tx of txs) await add(tx);
+      show(
+        txs.length === 1
+          ? "1 invoice auto-posted"
+          : txs.length + " invoices auto-posted",
+      );
+      setPage("transactions");
+    },
+    [add, show],
+  );
+
+  const handleVerify = useCallback(
+    async (id: string) => {
+      await updateStatus(id, "verified");
+      show("Verified");
+    },
+    [updateStatus, show],
   );
 
   const handleDelete = useCallback(
@@ -125,16 +154,32 @@ function Workspace({ userEmail, company, onUpdateCompany, onSignOut }: Workspace
         onViewAll={() => setPage("transactions")}
       />
     ),
-    transactions: <Transactions transactions={transactions} onDelete={handleDelete} />,
+    transactions: (
+      <Transactions
+        transactions={transactions}
+        onDelete={handleDelete}
+        onVerify={handleVerify}
+      />
+    ),
     upload: (
       <Upload
         onConfirm={handleConfirmUpload}
+        onBatchAutoPost={handleBatchAutoPost}
         companyId={companyId}
         existingTransactions={transactions}
+        prefs={prefs}
       />
     ),
     reports: <Reports transactions={transactions} />,
-    settings: <Settings company={company} companyId={companyId} onSave={handleSaveCompany} />,
+    settings: (
+      <Settings
+        company={company}
+        companyId={companyId}
+        onSave={handleSaveCompany}
+        prefs={prefs}
+        onUpdatePrefs={updatePrefs}
+      />
+    ),
   };
 
   return (

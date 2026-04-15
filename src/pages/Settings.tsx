@@ -6,14 +6,23 @@ import { T } from "../theme";
 import { DEFAULT_ACCOUNTS } from "../lib/accounts";
 import type { Company, CompanyInput } from "../hooks/useCompany";
 import { KNOWN_INTEGRATIONS, useIntegrations } from "../hooks/useIntegrations";
+import type { Prefs } from "../hooks/usePrefs";
 
 interface Props {
   company: Company | null;
   companyId: string | null;
   onSave: (input: Partial<CompanyInput>) => Promise<boolean>;
+  prefs: Prefs;
+  onUpdatePrefs: (patch: Partial<Prefs>) => void;
 }
 
-export function Settings({ company, companyId, onSave }: Props) {
+export function Settings({
+  company,
+  companyId,
+  onSave,
+  prefs,
+  onUpdatePrefs,
+}: Props) {
   const [form, setForm] = useState<CompanyInput>(() => ({
     name: company?.name ?? "",
     vat_number: company?.vat_number ?? "",
@@ -181,6 +190,111 @@ export function Settings({ company, companyId, onSave }: Props) {
         {readOnly && (
           <div style={{ marginTop: 14, fontSize: 11, color: T.td }}>
             Demo mode — connect Supabase to save real company data.
+          </div>
+        )}
+      </GlassCard>
+
+      <GlassCard style={{ padding: 28 }}>
+        <h3
+          style={{ margin: 0, fontSize: 16, fontWeight: 800, marginBottom: 6, color: T.text }}
+        >
+          Auto-posting
+        </h3>
+        <p style={{ margin: 0, marginBottom: 18, fontSize: 12, color: T.td }}>
+          Skip manual review for high-confidence extractions. Auto-posted
+          invoices land in the Pending queue so you can verify them later.
+        </p>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            padding: "16px 20px",
+            borderRadius: 14,
+            border: "1px solid " + T.gb,
+            background: "rgba(255,255,255,0.02)",
+            marginBottom: 12,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>
+              Auto-post confident extractions
+            </div>
+            <div style={{ fontSize: 11, color: T.td, marginTop: 2 }}>
+              Off by default — every invoice is reviewed.
+            </div>
+          </div>
+          <button
+            onClick={() => onUpdatePrefs({ autoPost: !prefs.autoPost })}
+            style={{
+              width: 48,
+              height: 26,
+              borderRadius: 13,
+              border: "1px solid " + T.gb,
+              background: prefs.autoPost ? T.gold : "rgba(255,255,255,0.05)",
+              cursor: "pointer",
+              position: "relative",
+              padding: 0,
+              transition: "background 0.2s",
+            }}
+          >
+            <span
+              style={{
+                position: "absolute",
+                top: 2,
+                left: prefs.autoPost ? 24 : 2,
+                width: 20,
+                height: 20,
+                borderRadius: 10,
+                background: prefs.autoPost ? T.bg : T.text,
+                transition: "left 0.2s",
+              }}
+            />
+          </button>
+        </div>
+        {prefs.autoPost && (
+          <div
+            style={{
+              padding: "16px 20px",
+              borderRadius: 14,
+              border: "1px solid " + T.gb,
+              background: "rgba(255,255,255,0.02)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 10,
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>
+                Confidence threshold
+              </div>
+              <div
+                style={{
+                  fontFamily: "'IBM Plex Mono'",
+                  fontSize: 13,
+                  fontWeight: 800,
+                  color: T.gold,
+                }}
+              >
+                {prefs.autoPostThreshold}%
+              </div>
+            </div>
+            <input
+              type="range"
+              min={50}
+              max={100}
+              value={prefs.autoPostThreshold}
+              onChange={(e) =>
+                onUpdatePrefs({
+                  autoPostThreshold: parseInt(e.target.value, 10),
+                })
+              }
+              style={{ width: "100%", accentColor: T.gold }}
+            />
           </div>
         )}
       </GlassCard>

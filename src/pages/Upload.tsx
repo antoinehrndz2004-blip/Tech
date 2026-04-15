@@ -18,14 +18,44 @@ import {
 } from "../lib/accounts";
 import { sha256Hex } from "../lib/hash";
 import { euroExact } from "../lib/format";
+import type { Prefs } from "../hooks/usePrefs";
 import type { ExtractedInvoice, InvoiceLine, Transaction } from "../types";
 
 type Status = "idle" | "uploading" | "processing" | "done";
 
 interface Props {
   onConfirm: (tx: Transaction) => void;
+  onBatchAutoPost: (txs: Transaction[]) => void;
   companyId: string | null;
   existingTransactions: Transaction[];
+  prefs: Prefs;
+}
+
+/**
+ * Build a Transaction from an extracted invoice + its attachment. Pulled out
+ * of the React callbacks so both manual confirm and auto-post use the exact
+ * same mapping.
+ */
+function txFromExtracted(
+  x: ExtractedInvoice,
+  attachment: Attachment | null,
+  status: "verified" | "pending",
+): Transaction {
+  const entry = journalEntryFor(x.type, x.category);
+  return {
+    id: "t" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    company: x.company,
+    date: x.date,
+    total: x.type === "expense" ? -x.total : x.total,
+    vat: x.vat,
+    category: x.category,
+    type: x.type,
+    status,
+    debit: formatAccount(entry.debit),
+    credit: formatAccount(entry.credit),
+    fileUrl: attachment?.path ?? null,
+    invoiceId: attachment?.invoiceId ?? null,
+  };
 }
 
 interface Attachment {
@@ -163,8 +193,10 @@ function normalizeExtractions(raw: unknown): ExtractedInvoice[] {
 
 export function Upload({
   onConfirm,
+  onBatchAutoPost,
   companyId,
   existingTransactions,
+  prefs,
 }: Props) {
   const [status, setStatus] = useState<Status>("idle");
   const [extractions, setExtractions] = useState<ExtractedInvoice[]>([]);
@@ -361,7 +393,35 @@ export function Upload({
           .eq("id", att.invoiceId);
         setAttachment(att);
       }
-      setExtractions(normalized);
+
+      // Auto-post: anything above the threshold AND with no soft-duplicate
+      // match goes straight to the pending queue without a manual review.
+      // Anything left goes through the normal review UI.
+      if (prefs.autoPost) {
+        const toReview: ExtractedInvoice[] = [];
+        const toAutoPost: Transaction[] = [];
+        for (const x of normalized) {
+          const dup = findSimilarTransaction(x, existingTransactions);
+          if (!dup && x.conf >= prefs.autoPostThreshold) {
+            toAutoPost.push(txFromExtracted(x, att, "pending"));
+          } else {
+            toReview.push(x);
+          }
+        }
+        if (toAutoPost.length > 0) onBatchAutoPost(toAutoPost);
+        if (toReview.length === 0) {
+          // Nothing left to review — go back to idle. (Inlined rather than
+          // calling finishReview so processFile doesn't have to depend on it.)
+          setExtractions([]);
+          setReviewIndex(0);
+          setAttachment(null);
+          setStatus("idle");
+          return;
+        }
+        setExtractions(toReview);
+      } else {
+        setExtractions(normalized);
+      }
       setReviewIndex(0);
       setStatus("done");
     } catch (err) {
@@ -370,7 +430,7 @@ export function Upload({
       setStatus("idle");
     }
   },
-    [companyId],
+    [companyId, prefs, existingTransactions, onBatchAutoPost],
   );
 
   const onFileChange = useCallback(
@@ -402,22 +462,7 @@ export function Upload({
   const confirm = useCallback(() => {
     const current = extractions[reviewIndex];
     if (!current) return;
-    const entry = journalEntryFor(current.type, current.category);
-    const tx: Transaction = {
-      id: "t" + Date.now(),
-      company: current.company,
-      date: current.date,
-      total: current.type === "expense" ? -current.total : current.total,
-      vat: current.vat,
-      category: current.category,
-      type: current.type,
-      status: "verified",
-      debit: formatAccount(entry.debit),
-      credit: formatAccount(entry.credit),
-      fileUrl: attachment?.path ?? null,
-      invoiceId: attachment?.invoiceId ?? null,
-    };
-    onConfirm(tx);
+    onConfirm(txFromExtracted(current, attachment, "verified"));
     if (reviewIndex + 1 < extractions.length) {
       setReviewIndex((i) => i + 1);
     } else {
