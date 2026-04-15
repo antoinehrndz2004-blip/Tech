@@ -1,6 +1,7 @@
 import {
   Fragment,
   useCallback,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -18,6 +19,11 @@ import {
 } from "../lib/accounts";
 import { sha256Hex } from "../lib/hash";
 import { euroExact } from "../lib/format";
+import {
+  buildSupplierMemory,
+  lookupSupplier,
+  type SupplierMemory,
+} from "../lib/supplierMemory";
 import type { Prefs } from "../hooks/usePrefs";
 import type { ExtractedInvoice, InvoiceLine, Transaction } from "../types";
 
@@ -207,10 +213,18 @@ export function Upload({
   const [duplicateFile, setDuplicateFile] = useState<DuplicateFile | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const supplierMemory = useMemo(
+    () => buildSupplierMemory(existingTransactions),
+    [existingTransactions],
+  );
+
   const reviewing = extractions[reviewIndex] ?? null;
   const remaining = Math.max(0, extractions.length - reviewIndex);
   const similarExisting = reviewing
     ? findSimilarTransaction(reviewing, existingTransactions)
+    : null;
+  const reviewingMemory = reviewing
+    ? lookupSupplier(supplierMemory, reviewing.company)
     : null;
 
   const openPicker = useCallback(() => inputRef.current?.click(), []);
@@ -363,7 +377,16 @@ export function Upload({
         setStatus("idle");
         return;
       }
-      const normalized = normalizeExtractions(data);
+      const rawNormalized = normalizeExtractions(data);
+      // Apply supplier memory: if we've seen this supplier before and a
+      // category emerged, override the model's guess silently. The user can
+      // still change it in the review panel.
+      const normalized = rawNormalized.map((x) => {
+        const mem = lookupSupplier(supplierMemory, x.company);
+        return mem && mem.category !== x.category
+          ? { ...x, category: mem.category }
+          : x;
+      });
       if (normalized.length === 0) {
         const att = await uploadPromise;
         if (att) {
@@ -430,7 +453,7 @@ export function Upload({
       setStatus("idle");
     }
   },
-    [companyId, prefs, existingTransactions, onBatchAutoPost],
+    [companyId, prefs, existingTransactions, onBatchAutoPost, supplierMemory],
   );
 
   const onFileChange = useCallback(
@@ -828,6 +851,7 @@ export function Upload({
           queueIndex={reviewIndex}
           queueTotal={extractions.length}
           similar={similarExisting}
+          memory={reviewingMemory}
           onChange={updateReviewing}
           onConfirm={confirm}
           onSkip={remaining > 1 ? skip : null}
@@ -848,6 +872,7 @@ interface ExtractedPanelProps {
   queueIndex: number;
   queueTotal: number;
   similar: Transaction | null;
+  memory: SupplierMemory | null;
   onChange: (next: ExtractedInvoice) => void;
   onConfirm: () => void;
   onSkip: (() => void) | null;
@@ -861,6 +886,7 @@ function ExtractedPanel({
   queueIndex,
   queueTotal,
   similar,
+  memory,
   onChange,
   onConfirm,
   onSkip,
@@ -952,6 +978,20 @@ function ExtractedPanel({
               </option>
             ))}
           </select>
+          {memory && (
+            <div
+              style={{
+                fontSize: 10,
+                color: T.td,
+                marginTop: 6,
+                fontStyle: "italic",
+                letterSpacing: 0.3,
+              }}
+            >
+              ↻ Learned from {memory.count} prior{" "}
+              {memory.count === 1 ? "invoice" : "invoices"} from this supplier
+            </div>
+          )}
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
