@@ -96,6 +96,18 @@ function findSimilarTransaction(
 const VENDORS = ["Amazon AWS", "Google Cloud", "Microsoft Azure", "Slack", "Adobe"];
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 const ACCEPT = "image/jpeg,image/png,image/webp,image/gif,application/pdf";
+// Camera capture is image-only — phones can't aim a "camera" at a PDF.
+const CAMERA_ACCEPT = "image/jpeg,image/png,image/webp";
+
+/**
+ * Heuristic for "this device probably has a usable rear camera." We only show
+ * the Camera button on mobile UAs because desktop browsers fall back to the
+ * regular file picker (which the Browse button already does).
+ */
+function hasCameraCapture(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
+}
 
 function randomInvoice(page = 1): ExtractedInvoice {
   const total = Math.round((Math.random() * 800 + 50) * 100) / 100;
@@ -212,6 +224,8 @@ export function Upload({
   const [dragOver, setDragOver] = useState(false);
   const [duplicateFile, setDuplicateFile] = useState<DuplicateFile | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const cameraSupported = useMemo(() => hasCameraCapture(), []);
 
   const supplierMemory = useMemo(
     () => buildSupplierMemory(existingTransactions),
@@ -228,6 +242,7 @@ export function Upload({
     : null;
 
   const openPicker = useCallback(() => inputRef.current?.click(), []);
+  const openCamera = useCallback(() => cameraRef.current?.click(), []);
 
   const processFile = useCallback(
     async (file: File, opts: { force?: boolean } = {}) => {
@@ -558,6 +573,17 @@ export function Upload({
         style={{ display: "none" }}
         onChange={onFileChange}
       />
+      {/* Mobile-only: tells the OS to launch the rear camera straight away.
+          On desktop browsers `capture` is ignored, so we hide this entry path
+          there to avoid duplicating the Browse button. */}
+      <input
+        ref={cameraRef}
+        type="file"
+        accept={CAMERA_ACCEPT}
+        capture="environment"
+        style={{ display: "none" }}
+        onChange={onFileChange}
+      />
 
       <GlassCard style={{ padding: 0, overflow: "hidden" }}>
         <div
@@ -641,24 +667,26 @@ export function Upload({
                 >
                   Browse Files
                 </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openPicker();
-                  }}
-                  style={{
-                    padding: "10px 22px",
-                    borderRadius: 12,
-                    border: "none",
-                    background: `linear-gradient(135deg, ${T.gold}, ${T.gl})`,
-                    color: T.bg,
-                    fontSize: 13,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  Use Camera
-                </button>
+                {cameraSupported && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openCamera();
+                    }}
+                    style={{
+                      padding: "10px 22px",
+                      borderRadius: 12,
+                      border: "none",
+                      background: `linear-gradient(135deg, ${T.gold}, ${T.gl})`,
+                      color: T.bg,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Use Camera
+                  </button>
+                )}
               </div>
             </div>
           )}
