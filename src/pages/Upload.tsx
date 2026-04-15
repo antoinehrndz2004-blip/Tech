@@ -15,6 +15,8 @@ import {
   formatAccount,
   journalEntryFor,
 } from "../lib/accounts";
+import { sha256Hex } from "../lib/hash";
+import { euroExact } from "../lib/format";
 import type { ExtractedInvoice, Transaction } from "../types";
 
 type Status = "idle" | "uploading" | "processing" | "done";
@@ -22,11 +24,36 @@ type Status = "idle" | "uploading" | "processing" | "done";
 interface Props {
   onConfirm: (tx: Transaction) => void;
   companyId: string | null;
+  existingTransactions: Transaction[];
 }
 
 interface Attachment {
   path: string;
   invoiceId: string;
+}
+
+interface DuplicateFile {
+  file: File;
+  hash: string;
+  matchDate: string;
+}
+
+/** Find a transaction that looks like the one we're about to save. */
+function findSimilarTransaction(
+  candidate: ExtractedInvoice,
+  list: Transaction[],
+): Transaction | null {
+  const company = candidate.company.trim().toLowerCase();
+  if (!company || !candidate.date) return null;
+  const target = Math.abs(candidate.total);
+  return (
+    list.find(
+      (t) =>
+        t.company.trim().toLowerCase() === company &&
+        t.date === candidate.date &&
+        Math.abs(Math.abs(t.total) - target) < 0.01,
+    ) ?? null
+  );
 }
 
 const VENDORS = ["Amazon AWS", "Google Cloud", "Microsoft Azure", "Slack", "Adobe"];
@@ -109,25 +136,35 @@ function normalizeExtractions(raw: unknown): ExtractedInvoice[] {
     .filter((x): x is ExtractedInvoice => x !== null);
 }
 
-export function Upload({ onConfirm, companyId }: Props) {
+export function Upload({
+  onConfirm,
+  companyId,
+  existingTransactions,
+}: Props) {
   const [status, setStatus] = useState<Status>("idle");
   const [extractions, setExtractions] = useState<ExtractedInvoice[]>([]);
   const [reviewIndex, setReviewIndex] = useState(0);
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [duplicateFile, setDuplicateFile] = useState<DuplicateFile | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const reviewing = extractions[reviewIndex] ?? null;
   const remaining = Math.max(0, extractions.length - reviewIndex);
+  const similarExisting = reviewing
+    ? findSimilarTransaction(reviewing, existingTransactions)
+    : null;
 
   const openPicker = useCallback(() => inputRef.current?.click(), []);
 
-  const processFile = useCallback(async (file: File) => {
+  const processFile = useCallback(
+    async (file: File, opts: { force?: boolean } = {}) => {
     setError(null);
     setAttachment(null);
     setExtractions([]);
     setReviewIndex(0);
+    setDuplicateFile(null);
     if (file.size > MAX_BYTES) {
       setError(
         "File is " +
@@ -139,6 +176,29 @@ export function Upload({ onConfirm, companyId }: Props) {
     const mediaType = file.type || "application/pdf";
     setStatus("uploading");
     try {
+      // Hash + duplicate check before doing any expensive work. We compute
+      // the hash regardless so it can be attached to the invoices row.
+      const fileHash = await sha256Hex(file);
+      if (supabase && companyId && !opts.force) {
+        const { data: dup } = await supabase
+          .from("invoices")
+          .select("id, created_at")
+          .eq("company_id", companyId)
+          .eq("file_hash", fileHash)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (dup) {
+          setDuplicateFile({
+            file,
+            hash: fileHash,
+            matchDate: dup.created_at,
+          });
+          setStatus("idle");
+          return;
+        }
+      }
+
       const base64 = await fileToBase64(file);
       setStatus("processing");
 
@@ -178,6 +238,7 @@ export function Upload({ onConfirm, companyId }: Props) {
               .insert({
                 company_id: companyId,
                 file_url: path,
+                file_hash: fileHash,
                 status: "processing",
               })
               .select("id")
@@ -283,7 +344,9 @@ export function Upload({ onConfirm, companyId }: Props) {
       setError(msg);
       setStatus("idle");
     }
-  }, [companyId]);
+  },
+    [companyId],
+  );
 
   const onFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -571,6 +634,64 @@ export function Upload({ onConfirm, companyId }: Props) {
             </div>
           )}
 
+          {duplicateFile && (
+            <div
+              style={{
+                marginTop: 16,
+                padding: "14px 16px",
+                borderRadius: 12,
+                fontSize: 12,
+                color: T.gold,
+                background: "rgba(212,168,83,0.08)",
+                border: "1px solid " + T.gbd,
+                lineHeight: 1.5,
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                Possible duplicate
+              </div>
+              <div style={{ color: T.td }}>
+                This exact file was already uploaded on{" "}
+                {duplicateFile.matchDate.slice(0, 10)}. Upload it again only if
+                you really meant to book it twice.
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button
+                  onClick={() => setDuplicateFile(null)}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 10,
+                    border: "1px solid " + T.gb,
+                    background: "transparent",
+                    color: T.td,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() =>
+                    void processFile(duplicateFile.file, { force: true })
+                  }
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 10,
+                    border: "none",
+                    background: `linear-gradient(135deg, ${T.gold}, ${T.gl})`,
+                    color: T.bg,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Upload anyway
+                </button>
+              </div>
+            </div>
+          )}
+
           <div
             style={{
               marginTop: 24,
@@ -636,6 +757,7 @@ export function Upload({ onConfirm, companyId }: Props) {
           extracted={reviewing}
           queueIndex={reviewIndex}
           queueTotal={extractions.length}
+          similar={similarExisting}
           onChange={updateReviewing}
           onConfirm={confirm}
           onSkip={remaining > 1 ? skip : null}
@@ -655,6 +777,7 @@ interface ExtractedPanelProps {
   extracted: ExtractedInvoice;
   queueIndex: number;
   queueTotal: number;
+  similar: Transaction | null;
   onChange: (next: ExtractedInvoice) => void;
   onConfirm: () => void;
   onSkip: (() => void) | null;
@@ -667,6 +790,7 @@ function ExtractedPanel({
   extracted,
   queueIndex,
   queueTotal,
+  similar,
   onChange,
   onConfirm,
   onSkip,
@@ -809,6 +933,29 @@ function ExtractedPanel({
           <AccountingEntryRows extracted={extracted} />
         </div>
       </div>
+
+      {similar && (
+        <div
+          style={{
+            marginTop: 18,
+            padding: "12px 14px",
+            borderRadius: 12,
+            fontSize: 12,
+            color: T.gold,
+            background: "rgba(212,168,83,0.08)",
+            border: "1px solid " + T.gbd,
+            lineHeight: 1.5,
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 2 }}>
+            Similar transaction already booked
+          </div>
+          <div style={{ color: T.td }}>
+            {similar.company} · {similar.date} · {euroExact(similar.total)}.
+            Save this one only if it's genuinely a different invoice.
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
         <button

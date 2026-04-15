@@ -68,6 +68,7 @@ export interface Database {
           id: string;
           company_id: string;
           file_url: string | null;
+          file_hash: string | null;
           status: "uploaded" | "processing" | "extracted" | "confirmed" | "failed";
           extracted: Record<string, unknown> | null;
           confidence: number | null;
@@ -78,6 +79,7 @@ export interface Database {
           id?: string;
           company_id: string;
           file_url?: string | null;
+          file_hash?: string | null;
           status?: "uploaded" | "processing" | "extracted" | "confirmed" | "failed";
           extracted?: Record<string, unknown> | null;
           confidence?: number | null;
