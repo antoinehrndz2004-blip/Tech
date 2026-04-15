@@ -31,6 +31,17 @@ export interface MonthStat {
   profit: number;
 }
 
+export interface InvoiceLine {
+  description: string;
+  quantity: number;
+  /** Unit price, excluding VAT (HT), in EUR. */
+  unitPrice: number;
+  /** VAT rate as a percentage, e.g. 17 for 17%. */
+  vatRate: number;
+  /** Line amount excluding VAT (quantity * unitPrice). */
+  lineTotal: number;
+}
+
 export interface ExtractedInvoice {
   company: string;
   date: string;
@@ -42,6 +53,8 @@ export interface ExtractedInvoice {
   conf: number;
   /** Page(s) of the source document this invoice came from, e.g. "1", "2-3". */
   pageRange?: string;
+  /** Itemized lines, if the document was itemized. Empty array otherwise. */
+  lines?: InvoiceLine[];
 }
 
 export type PageId =

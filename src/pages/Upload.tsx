@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useRef,
   useState,
@@ -17,7 +18,7 @@ import {
 } from "../lib/accounts";
 import { sha256Hex } from "../lib/hash";
 import { euroExact } from "../lib/format";
-import type { ExtractedInvoice, Transaction } from "../types";
+import type { ExtractedInvoice, InvoiceLine, Transaction } from "../types";
 
 type Status = "idle" | "uploading" | "processing" | "done";
 
@@ -103,6 +104,25 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
+function normalizeLine(raw: unknown): InvoiceLine | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const description =
+    typeof r.description === "string" ? r.description.trim() : "";
+  const quantity =
+    typeof r.quantity === "number" ? r.quantity : Number(r.quantity) || 1;
+  const unitPrice =
+    typeof r.unitPrice === "number" ? r.unitPrice : Number(r.unitPrice) || 0;
+  const vatRate =
+    typeof r.vatRate === "number" ? r.vatRate : Number(r.vatRate) || 0;
+  const lineTotal =
+    typeof r.lineTotal === "number"
+      ? r.lineTotal
+      : Number(r.lineTotal) || quantity * unitPrice;
+  if (!description && !lineTotal) return null;
+  return { description, quantity, unitPrice, vatRate, lineTotal };
+}
+
 function normalizeOne(raw: unknown): ExtractedInvoice | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -119,8 +139,13 @@ function normalizeOne(raw: unknown): ExtractedInvoice | null {
   const conf =
     typeof r.conf === "number" ? Math.round(r.conf) : Number(r.conf) || 80;
   const pageRange = typeof r.pageRange === "string" ? r.pageRange : undefined;
+  const lines = Array.isArray(r.lines)
+    ? (r.lines
+        .map(normalizeLine)
+        .filter((x): x is InvoiceLine => x !== null) as InvoiceLine[])
+    : [];
   if (!company && !date && !total) return null;
-  return { company, date, total, vat, category, type, conf, pageRange };
+  return { company, date, total, vat, category, type, conf, pageRange, lines };
 }
 
 /**
@@ -932,6 +957,27 @@ function ExtractedPanel({
           </div>
           <AccountingEntryRows extracted={extracted} />
         </div>
+
+        <LineItems
+          lines={extracted.lines ?? []}
+          onChange={(next) => onChange({ ...extracted, lines: next })}
+          onRecalcTotals={() => {
+            const lines = extracted.lines ?? [];
+            if (lines.length === 0) return;
+            const total = lines.reduce((s, l) => s + (l.lineTotal || 0), 0);
+            const vat = lines.reduce(
+              (s, l) => s + ((l.lineTotal || 0) * (l.vatRate || 0)) / 100,
+              0,
+            );
+            onChange({
+              ...extracted,
+              total: Math.round(total * 100) / 100,
+              vat: Math.round(vat * 100) / 100,
+            });
+          }}
+          label={label}
+          inputStyle={inputStyle}
+        />
       </div>
 
       {similar && (
@@ -1011,6 +1057,213 @@ function ExtractedPanel({
         </button>
       </div>
     </GlassCard>
+  );
+}
+
+interface LineItemsProps {
+  lines: InvoiceLine[];
+  onChange: (lines: InvoiceLine[]) => void;
+  onRecalcTotals: () => void;
+  label: (text: string) => ReactElement;
+  inputStyle: CSSProperties;
+}
+
+function LineItems({
+  lines,
+  onChange,
+  onRecalcTotals,
+  label,
+  inputStyle,
+}: LineItemsProps) {
+  const updateLine = (i: number, patch: Partial<InvoiceLine>) => {
+    const next = lines.slice();
+    const merged = { ...next[i], ...patch };
+    // Keep lineTotal in sync if user edits qty or unit price, unless they
+    // also edited lineTotal in the same patch.
+    if (
+      ("quantity" in patch || "unitPrice" in patch) &&
+      !("lineTotal" in patch)
+    ) {
+      merged.lineTotal =
+        Math.round(merged.quantity * merged.unitPrice * 100) / 100;
+    }
+    next[i] = merged;
+    onChange(next);
+  };
+  const addLine = () =>
+    onChange([
+      ...lines,
+      { description: "", quantity: 1, unitPrice: 0, vatRate: 17, lineTotal: 0 },
+    ]);
+  const removeLine = (i: number) =>
+    onChange(lines.filter((_, idx) => idx !== i));
+
+  const cell: CSSProperties = {
+    ...inputStyle,
+    padding: "8px 10px",
+    fontSize: 12,
+  };
+  const numCell: CSSProperties = {
+    ...cell,
+    fontFamily: "'IBM Plex Mono'",
+    textAlign: "right",
+  };
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 8,
+        }}
+      >
+        {label("Line Items")}
+        {lines.length > 0 && (
+          <button
+            onClick={onRecalcTotals}
+            title="Set Total and VAT to the sum of the lines"
+            style={{
+              background: "none",
+              border: "none",
+              color: T.gold,
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+              padding: 0,
+              letterSpacing: 0.5,
+              textTransform: "uppercase",
+            }}
+          >
+            ↺ Recalc totals
+          </button>
+        )}
+      </div>
+
+      {lines.length === 0 && (
+        <div
+          style={{
+            fontSize: 12,
+            color: T.td,
+            padding: "14px 16px",
+            borderRadius: 12,
+            background: "rgba(255,255,255,0.02)",
+            border: "1px dashed " + T.gb,
+            textAlign: "center",
+          }}
+        >
+          No line items detected.
+        </div>
+      )}
+
+      {lines.length > 0 && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 60px 90px 60px 90px 28px",
+            gap: 6,
+            alignItems: "center",
+          }}
+        >
+          {["Description", "Qty", "Unit HT", "VAT %", "Total HT", ""].map(
+            (h, i) => (
+              <div
+                key={i}
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: T.td,
+                  textTransform: "uppercase",
+                  letterSpacing: 1.2,
+                  textAlign:
+                    i === 1 || i === 2 || i === 3 || i === 4 ? "right" : "left",
+                }}
+              >
+                {h}
+              </div>
+            ),
+          )}
+          {lines.map((line, i) => (
+            <Fragment key={i}>
+              <input
+                value={line.description}
+                onChange={(e) =>
+                  updateLine(i, { description: e.target.value })
+                }
+                style={cell}
+              />
+              <input
+                type="number"
+                value={line.quantity}
+                onChange={(e) =>
+                  updateLine(i, { quantity: parseFloat(e.target.value) || 0 })
+                }
+                style={numCell}
+              />
+              <input
+                type="number"
+                value={line.unitPrice}
+                onChange={(e) =>
+                  updateLine(i, { unitPrice: parseFloat(e.target.value) || 0 })
+                }
+                style={numCell}
+              />
+              <input
+                type="number"
+                value={line.vatRate}
+                onChange={(e) =>
+                  updateLine(i, { vatRate: parseFloat(e.target.value) || 0 })
+                }
+                style={numCell}
+              />
+              <input
+                type="number"
+                value={line.lineTotal}
+                onChange={(e) =>
+                  updateLine(i, { lineTotal: parseFloat(e.target.value) || 0 })
+                }
+                style={numCell}
+              />
+              <button
+                onClick={() => removeLine(i)}
+                title="Remove line"
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: T.td,
+                  fontSize: 14,
+                  cursor: "pointer",
+                  opacity: 0.6,
+                  padding: 0,
+                }}
+              >
+                ✕
+              </button>
+            </Fragment>
+          ))}
+        </div>
+      )}
+
+      <button
+        onClick={addLine}
+        style={{
+          marginTop: 10,
+          padding: "8px 12px",
+          borderRadius: 10,
+          border: "1px dashed " + T.gb,
+          background: "transparent",
+          color: T.td,
+          fontSize: 11,
+          fontWeight: 600,
+          cursor: "pointer",
+          letterSpacing: 0.5,
+          textTransform: "uppercase",
+        }}
+      >
+        + Add line
+      </button>
+    </div>
   );
 }
 

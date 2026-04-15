@@ -78,6 +78,48 @@ const INVOICE_SCHEMA = {
         "Page(s) of the source document where this invoice appears, " +
         "e.g. '1', '2-3'. Use '1' for single-image inputs.",
     },
+    lines: {
+      type: "array",
+      description:
+        "Itemized lines on the invoice. Return [] when the document is " +
+        "not itemized (e.g. a simple receipt). Amounts are HT (ex-VAT).",
+      items: {
+        type: "object",
+        properties: {
+          description: {
+            type: "string",
+            description: "Short description of the good/service.",
+          },
+          quantity: {
+            type: "number",
+            description: "Quantity; default 1 if not shown.",
+          },
+          unitPrice: {
+            type: "number",
+            description: "Per-unit price EXCLUDING VAT (HT) in EUR.",
+          },
+          vatRate: {
+            type: "number",
+            description:
+              "Per-line VAT rate as a percentage (e.g. 17 for 17%). 0 " +
+              "if the line is not subject to VAT.",
+          },
+          lineTotal: {
+            type: "number",
+            description:
+              "Line amount EXCLUDING VAT (HT) in EUR — typically " +
+              "quantity * unitPrice.",
+          },
+        },
+        required: [
+          "description",
+          "quantity",
+          "unitPrice",
+          "vatRate",
+          "lineTotal",
+        ],
+      },
+    },
   },
   required: ["company", "date", "total", "vat", "category", "type", "conf"],
 } as const;
@@ -103,6 +145,9 @@ const SYSTEM_PROMPT =
   "You are an expert accounting assistant for Luxembourg SMEs. " +
   "Given an image, PDF or batch of scans, extract EVERY distinct invoice " +
   "or receipt you can find — multi-page PDFs often bundle several. " +
+  "When the invoice is itemized, also return each `lines` entry with " +
+  "description, quantity, unit price (HT), VAT rate and line total (HT). " +
+  "If the document is not itemized (simple receipt), set `lines` to []. " +
   "ALWAYS respond by calling the `record_invoices` tool with an array, " +
   "never in plain text. Luxembourg VAT is typically 17% (standard), 14%, " +
   "8% or 3%. Amounts use `.` as decimal separator. Dates must be " +
