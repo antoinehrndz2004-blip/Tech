@@ -18,6 +18,10 @@ export interface Transaction {
   /** Account code + label, e.g. "6100 - Software". */
   debit: string;
   credit: string;
+  /** Storage path of the uploaded source file, if any. */
+  fileUrl?: string | null;
+  /** UUID of the linked `invoices` row, if any. */
+  invoiceId?: string | null;
 }
 
 export interface MonthStat {

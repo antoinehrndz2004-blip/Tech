@@ -9,7 +9,7 @@ import { GlassCard } from "../components/GlassCard";
 import { Badge } from "../components/Badge";
 import { ThreeScene } from "../components/ThreeScene";
 import { CATEGORIES, T, type Category } from "../theme";
-import { supabase } from "../lib/supabase";
+import { INVOICES_BUCKET, supabase } from "../lib/supabase";
 import {
   SYSTEM_ACCOUNTS,
   formatAccount,
@@ -21,6 +21,12 @@ type Status = "idle" | "uploading" | "processing" | "done";
 
 interface Props {
   onConfirm: (tx: Transaction) => void;
+  companyId: string | null;
+}
+
+interface Attachment {
+  path: string;
+  invoiceId: string;
 }
 
 const VENDORS = ["Amazon AWS", "Google Cloud", "Microsoft Azure", "Slack", "Adobe"];
@@ -78,9 +84,10 @@ function normalizeExtraction(raw: unknown): ExtractedInvoice | null {
   return { company, date, total, vat, category, type, conf };
 }
 
-export function Upload({ onConfirm }: Props) {
+export function Upload({ onConfirm, companyId }: Props) {
   const [status, setStatus] = useState<Status>("idle");
   const [extracted, setExtracted] = useState<ExtractedInvoice | null>(null);
+  const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -89,6 +96,7 @@ export function Upload({ onConfirm }: Props) {
 
   const processFile = useCallback(async (file: File) => {
     setError(null);
+    setAttachment(null);
     if (file.size > MAX_BYTES) {
       setError(
         "File is " +
@@ -110,6 +118,45 @@ export function Upload({ onConfirm }: Props) {
         setStatus("done");
         return;
       }
+
+      // Kick off the file upload to Storage in parallel with the extraction.
+      // We need a company_id in the path so storage RLS accepts the write; if
+      // there's none (shouldn't happen in the authed app), skip persistence.
+      const uploadPromise: Promise<Attachment | null> = companyId
+        ? (async () => {
+            const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+            const path =
+              companyId +
+              "/" +
+              (crypto.randomUUID?.() ?? String(Date.now())) +
+              "-" +
+              safeName;
+            const { error: upErr } = await supabase!.storage
+              .from(INVOICES_BUCKET)
+              .upload(path, file, {
+                contentType: mediaType,
+                upsert: false,
+              });
+            if (upErr) {
+              console.error("[upload] storage upload failed:", upErr);
+              return null;
+            }
+            const { data: invRow, error: invErr } = await supabase!
+              .from("invoices")
+              .insert({
+                company_id: companyId,
+                file_url: path,
+                status: "processing",
+              })
+              .select("id")
+              .single();
+            if (invErr || !invRow) {
+              console.error("[upload] invoices insert failed:", invErr);
+              return null;
+            }
+            return { path, invoiceId: invRow.id };
+          })()
+        : Promise.resolve(null);
 
       const { data, error: fnError } = await supabase.functions.invoke<
         Record<string, unknown>
@@ -142,20 +189,56 @@ export function Upload({ onConfirm }: Props) {
             /* ignore */
           }
         }
+        // Mark the invoice row (if we created one) as failed.
+        const att = await uploadPromise;
+        if (att) {
+          await supabase!
+            .from("invoices")
+            .update({ status: "failed" })
+            .eq("id", att.invoiceId);
+        }
         setError(detail);
         setStatus("idle");
         return;
       }
       if (data && typeof data === "object" && "error" in data) {
+        const att = await uploadPromise;
+        if (att) {
+          await supabase!
+            .from("invoices")
+            .update({ status: "failed" })
+            .eq("id", att.invoiceId);
+        }
         setError(String((data as { error: unknown }).error));
         setStatus("idle");
         return;
       }
       const normalized = normalizeExtraction(data);
       if (!normalized) {
-        setError("Claude returned an empty extraction. Try a clearer scan.");
+        const att = await uploadPromise;
+        if (att) {
+          await supabase!
+            .from("invoices")
+            .update({ status: "failed" })
+            .eq("id", att.invoiceId);
+        }
+        setError("The model returned an empty extraction. Try a clearer scan.");
         setStatus("idle");
         return;
+      }
+      // Await the parallel upload and stamp the invoice row with the
+      // extracted payload so it's retrievable even if the user cancels.
+      const att = await uploadPromise;
+      if (att) {
+        await supabase!
+          .from("invoices")
+          .update({
+            status: "extracted",
+            extracted: normalized as unknown as Record<string, unknown>,
+            confidence: normalized.conf,
+          })
+          .eq("id", att.invoiceId);
+        setAttachment(att);
       }
       setExtracted(normalized);
       setStatus("done");
@@ -164,7 +247,7 @@ export function Upload({ onConfirm }: Props) {
       setError(msg);
       setStatus("idle");
     }
-  }, []);
+  }, [companyId]);
 
   const onFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -199,11 +282,14 @@ export function Upload({ onConfirm }: Props) {
       status: "verified",
       debit: formatAccount(entry.debit),
       credit: formatAccount(entry.credit),
+      fileUrl: attachment?.path ?? null,
+      invoiceId: attachment?.invoiceId ?? null,
     };
     onConfirm(tx);
     setExtracted(null);
+    setAttachment(null);
     setStatus("idle");
-  }, [extracted, onConfirm]);
+  }, [extracted, attachment, onConfirm]);
 
   const inputStyle: CSSProperties = {
     width: "100%",
@@ -486,6 +572,7 @@ export function Upload({ onConfirm }: Props) {
           onConfirm={confirm}
           onCancel={() => {
             setExtracted(null);
+            setAttachment(null);
             setStatus("idle");
             setError(null);
           }}

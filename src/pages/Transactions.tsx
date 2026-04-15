@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { GlassCard } from "../components/GlassCard";
 import { Badge } from "../components/Badge";
 import { CATEGORIES, T } from "../theme";
 import type { Transaction, TxType } from "../types";
 import { signedEuro } from "../lib/format";
 import { downloadCsv, toCsv } from "../lib/csv";
+import { getInvoiceSignedUrl } from "../lib/supabase";
 
 interface Props {
   transactions: Transaction[];
@@ -28,6 +29,16 @@ export function Transactions({ transactions, onDelete }: Props) {
       }),
     [transactions, search, typeFilter, categoryFilter],
   );
+
+  const openAttachment = useCallback(async (path: string) => {
+    const url = await getInvoiceSignedUrl(path);
+    if (url) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else {
+      // eslint-disable-next-line no-alert
+      alert("Could not open file. It may have been removed.");
+    }
+  }, []);
 
   const exportCsv = () => {
     const header = [
@@ -160,14 +171,14 @@ export function Transactions({ transactions, onDelete }: Props) {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "2fr 95px 95px 120px 120px 110px 50px",
+            gridTemplateColumns: "2fr 95px 95px 120px 120px 110px 40px 40px",
             gap: 8,
             padding: "14px 22px",
             borderBottom: "1px solid " + T.gb,
             background: "rgba(255,255,255,0.02)",
           }}
         >
-          {["Company", "Date", "Category", "Debit", "Credit", "Amount", ""].map((x, i) => (
+          {["Company", "Date", "Category", "Debit", "Credit", "Amount", "", ""].map((x, i) => (
             <div
               key={i}
               style={{
@@ -188,7 +199,7 @@ export function Transactions({ transactions, onDelete }: Props) {
             key={t.id}
             style={{
               display: "grid",
-              gridTemplateColumns: "2fr 95px 95px 120px 120px 110px 50px",
+              gridTemplateColumns: "2fr 95px 95px 120px 120px 110px 40px 40px",
               gap: 8,
               padding: "14px 22px",
               borderBottom: "1px solid " + T.gb,
@@ -244,6 +255,24 @@ export function Transactions({ transactions, onDelete }: Props) {
               }}
             >
               {signedEuro(t.total)}
+            </div>
+            <div style={{ textAlign: "center" }}>
+              {t.fileUrl ? (
+                <button
+                  onClick={() => void openAttachment(t.fileUrl as string)}
+                  title="Open original file"
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: 4,
+                    color: T.gold,
+                    fontSize: 14,
+                  }}
+                >
+                  ⎙
+                </button>
+              ) : null}
             </div>
             <div style={{ textAlign: "right" }}>
               <button

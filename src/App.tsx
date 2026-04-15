@@ -126,7 +126,7 @@ function Workspace({ userEmail, company, onUpdateCompany, onSignOut }: Workspace
       />
     ),
     transactions: <Transactions transactions={transactions} onDelete={handleDelete} />,
-    upload: <Upload onConfirm={handleConfirmUpload} />,
+    upload: <Upload onConfirm={handleConfirmUpload} companyId={companyId} />,
     reports: <Reports transactions={transactions} />,
     settings: <Settings company={company} companyId={companyId} onSave={handleSaveCompany} />,
   };

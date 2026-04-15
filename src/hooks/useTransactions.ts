@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import { makeTransactions } from "../lib/mockData";
 import type { Category } from "../theme";
+import type { Database } from "../lib/database.types";
 import type { Transaction, TxStatus, TxType } from "../types";
 
 interface Options {
@@ -25,15 +26,18 @@ export function useTransactions({ companyId }: Options = {}) {
     }
     const { data, error } = await supabase!
       .from("transactions")
-      .select("*")
+      .select("*, invoice:invoices(file_url)")
       .eq("company_id", companyId)
       .order("date", { ascending: false });
     if (error) {
       console.error(error);
       setTransactions([]);
     } else {
+      type Row = Database["public"]["Tables"]["transactions"]["Row"] & {
+        invoice: { file_url: string | null } | null;
+      };
       setTransactions(
-        (data ?? []).map((row) => ({
+        ((data ?? []) as Row[]).map((row) => ({
           id: row.id,
           company: row.counterparty,
           date: row.date,
@@ -44,6 +48,8 @@ export function useTransactions({ companyId }: Options = {}) {
           status: row.status as TxStatus,
           debit: row.debit_account,
           credit: row.credit_account,
+          invoiceId: row.invoice_id,
+          fileUrl: row.invoice?.file_url ?? null,
         })),
       );
     }
@@ -58,21 +64,37 @@ export function useTransactions({ companyId }: Options = {}) {
     async (tx: Transaction) => {
       setTransactions((prev) => [tx, ...prev]);
       if (!isSupabaseConfigured() || !companyId) return;
-      const { error } = await supabase!.from("transactions").insert({
-        company_id: companyId,
-        counterparty: tx.company,
-        date: tx.date,
-        total: tx.total,
-        vat: tx.vat,
-        category: tx.category,
-        type: tx.type,
-        status: tx.status,
-        debit_account: tx.debit,
-        credit_account: tx.credit,
-        invoice_id: null,
-        created_by: null,
-      });
-      if (error) console.error(error);
+      const { data: inserted, error } = await supabase!
+        .from("transactions")
+        .insert({
+          company_id: companyId,
+          counterparty: tx.company,
+          date: tx.date,
+          total: tx.total,
+          vat: tx.vat,
+          category: tx.category,
+          type: tx.type,
+          status: tx.status,
+          debit_account: tx.debit,
+          credit_account: tx.credit,
+          invoice_id: tx.invoiceId ?? null,
+          created_by: null,
+        })
+        .select("id")
+        .single();
+      if (error) {
+        console.error(error);
+        return;
+      }
+      // Close the loop: mark the invoice as confirmed and point it back to
+      // the freshly inserted transaction.
+      if (tx.invoiceId && inserted?.id) {
+        const { error: linkErr } = await supabase!
+          .from("invoices")
+          .update({ status: "confirmed", transaction_id: inserted.id })
+          .eq("id", tx.invoiceId);
+        if (linkErr) console.error(linkErr);
+      }
     },
     [companyId],
   );
