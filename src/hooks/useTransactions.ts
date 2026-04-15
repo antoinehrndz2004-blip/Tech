@@ -86,12 +86,12 @@ export function useTransactions({ companyId }: Options = {}) {
         console.error(error);
         return;
       }
-      // Close the loop: mark the invoice as confirmed and point it back to
-      // the freshly inserted transaction.
+      // Mark the source invoice as confirmed. A single PDF can produce many
+      // transactions (multi-invoice files), so this update is idempotent.
       if (tx.invoiceId && inserted?.id) {
         const { error: linkErr } = await supabase!
           .from("invoices")
-          .update({ status: "confirmed", transaction_id: inserted.id })
+          .update({ status: "confirmed" })
           .eq("id", tx.invoiceId);
         if (linkErr) console.error(linkErr);
       }

@@ -40,6 +40,8 @@ export interface ExtractedInvoice {
   type: TxType;
   /** AI confidence, 0-100. */
   conf: number;
+  /** Page(s) of the source document this invoice came from, e.g. "1", "2-3". */
+  pageRange?: string;
 }
 
 export type PageId =

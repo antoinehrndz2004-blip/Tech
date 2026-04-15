@@ -9,7 +9,11 @@
  * Receives:  { file: <base64 string>, mediaType: "image/jpeg" | "image/png"
  *                                                | "image/webp" | "image/gif"
  *                                                | "application/pdf" }
- * Returns :  { company, date, total, vat, category, type, conf }
+ * Returns :  { invoices: Array<{ company, date, total, vat, category, type,
+ *                                 conf, pageRange? }> }
+ *
+ * A single PDF can contain many invoices — the model returns one entry per
+ * distinct invoice it detects.
  */
 import { corsHeaders } from "../_shared/cors.ts";
 
@@ -26,7 +30,7 @@ const CATEGORIES = [
   "Other",
 ] as const;
 
-const SCHEMA = {
+const INVOICE_SCHEMA = {
   type: "object",
   properties: {
     company: {
@@ -68,20 +72,46 @@ const SCHEMA = {
       type: "number",
       description: "Integer 0-100. Your overall confidence in the extraction.",
     },
+    pageRange: {
+      type: "string",
+      description:
+        "Page(s) of the source document where this invoice appears, " +
+        "e.g. '1', '2-3'. Use '1' for single-image inputs.",
+    },
   },
   required: ["company", "date", "total", "vat", "category", "type", "conf"],
 } as const;
 
+const SCHEMA = {
+  type: "object",
+  properties: {
+    invoices: {
+      type: "array",
+      minItems: 1,
+      description:
+        "Every distinct invoice or receipt found in the document. Most " +
+        "files contain one. Multi-page PDFs and batched scans may " +
+        "contain several — return ONE entry per invoice, with " +
+        "`pageRange` set to the page(s) it occupies.",
+      items: INVOICE_SCHEMA,
+    },
+  },
+  required: ["invoices"],
+} as const;
+
 const SYSTEM_PROMPT =
   "You are an expert accounting assistant for Luxembourg SMEs. " +
-  "Given an invoice, receipt, or bill, extract its structured data and " +
-  "ALWAYS respond by calling the `record_invoice` tool — never in plain " +
-  "text. Luxembourg VAT is typically 17% (standard), 14%, 8% or 3%. " +
-  "Amounts use `.` as decimal separator. Dates must be YYYY-MM-DD. If " +
-  "something is unreadable, use your best guess and lower `conf`.";
+  "Given an image, PDF or batch of scans, extract EVERY distinct invoice " +
+  "or receipt you can find — multi-page PDFs often bundle several. " +
+  "ALWAYS respond by calling the `record_invoices` tool with an array, " +
+  "never in plain text. Luxembourg VAT is typically 17% (standard), 14%, " +
+  "8% or 3%. Amounts use `.` as decimal separator. Dates must be " +
+  "YYYY-MM-DD. If something is unreadable, use your best guess and " +
+  "lower `conf` for that invoice.";
 
 const USER_PROMPT =
-  "Extract this document and call record_invoice with the structured data.";
+  "Extract every invoice in this document and call record_invoices with " +
+  "the structured array.";
 
 interface Payload {
   file?: string;
@@ -142,13 +172,13 @@ async function callOpenAI(
       {
         type: "function",
         function: {
-          name: "record_invoice",
-          description: "Record structured invoice data.",
+          name: "record_invoices",
+          description: "Record every invoice found in the document.",
           parameters: SCHEMA,
         },
       },
     ],
-    tool_choice: { type: "function", function: { name: "record_invoice" } },
+    tool_choice: { type: "function", function: { name: "record_invoices" } },
   };
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -204,12 +234,12 @@ async function callAnthropic(
     system: SYSTEM_PROMPT,
     tools: [
       {
-        name: "record_invoice",
-        description: "Record structured invoice data.",
+        name: "record_invoices",
+        description: "Record every invoice found in the document.",
         input_schema: SCHEMA,
       },
     ],
-    tool_choice: { type: "tool", name: "record_invoice" },
+    tool_choice: { type: "tool", name: "record_invoices" },
     messages: [
       {
         role: "user",
@@ -241,7 +271,7 @@ async function callAnthropic(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const toolUse = (data.content ?? []).find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (c: any) => c?.type === "tool_use" && c?.name === "record_invoice",
+    (c: any) => c?.type === "tool_use" && c?.name === "record_invoices",
   );
   if (!toolUse) {
     return {

@@ -33,7 +33,7 @@ const VENDORS = ["Amazon AWS", "Google Cloud", "Microsoft Azure", "Slack", "Adob
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 const ACCEPT = "image/jpeg,image/png,image/webp,image/gif,application/pdf";
 
-function randomInvoice(): ExtractedInvoice {
+function randomInvoice(page = 1): ExtractedInvoice {
   const total = Math.round((Math.random() * 800 + 50) * 100) / 100;
   const day = Math.floor(Math.random() * 28) + 1;
   const category = CATEGORIES[Math.floor(Math.random() * CATEGORIES.length)];
@@ -45,7 +45,18 @@ function randomInvoice(): ExtractedInvoice {
     category,
     type: "expense",
     conf: Math.round(Math.random() * 8 + 90),
+    pageRange: String(page),
   };
+}
+
+/**
+ * Demo-mode helper: simulate a single image (1 invoice) or a multi-page PDF
+ * (1-3 invoices) so the multi-invoice review UI is exercisable without a
+ * backend.
+ */
+function randomInvoices(mediaType: string): ExtractedInvoice[] {
+  const n = mediaType === "application/pdf" ? Math.floor(Math.random() * 3) + 1 : 1;
+  return Array.from({ length: n }, (_, i) => randomInvoice(i + 1));
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -65,7 +76,7 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function normalizeExtraction(raw: unknown): ExtractedInvoice | null {
+function normalizeOne(raw: unknown): ExtractedInvoice | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   const company = typeof r.company === "string" ? r.company : "";
@@ -80,23 +91,43 @@ function normalizeExtraction(raw: unknown): ExtractedInvoice | null {
   const type = r.type === "revenue" ? "revenue" : "expense";
   const conf =
     typeof r.conf === "number" ? Math.round(r.conf) : Number(r.conf) || 80;
+  const pageRange = typeof r.pageRange === "string" ? r.pageRange : undefined;
   if (!company && !date && !total) return null;
-  return { company, date, total, vat, category, type, conf };
+  return { company, date, total, vat, category, type, conf, pageRange };
+}
+
+/**
+ * The edge function returns `{ invoices: [...] }`. Older single-invoice
+ * payloads are still accepted so a stale deploy won't break the UI.
+ */
+function normalizeExtractions(raw: unknown): ExtractedInvoice[] {
+  if (!raw || typeof raw !== "object") return [];
+  const r = raw as Record<string, unknown>;
+  const arr: unknown[] = Array.isArray(r.invoices) ? r.invoices : [raw];
+  return arr
+    .map(normalizeOne)
+    .filter((x): x is ExtractedInvoice => x !== null);
 }
 
 export function Upload({ onConfirm, companyId }: Props) {
   const [status, setStatus] = useState<Status>("idle");
-  const [extracted, setExtracted] = useState<ExtractedInvoice | null>(null);
+  const [extractions, setExtractions] = useState<ExtractedInvoice[]>([]);
+  const [reviewIndex, setReviewIndex] = useState(0);
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const reviewing = extractions[reviewIndex] ?? null;
+  const remaining = Math.max(0, extractions.length - reviewIndex);
 
   const openPicker = useCallback(() => inputRef.current?.click(), []);
 
   const processFile = useCallback(async (file: File) => {
     setError(null);
     setAttachment(null);
+    setExtractions([]);
+    setReviewIndex(0);
     if (file.size > MAX_BYTES) {
       setError(
         "File is " +
@@ -114,7 +145,8 @@ export function Upload({ onConfirm, companyId }: Props) {
       // Demo mode fallback — no Supabase configured, fake the result.
       if (!supabase) {
         await new Promise((r) => setTimeout(r, 1200));
-        setExtracted(randomInvoice());
+        setExtractions(randomInvoices(mediaType));
+        setReviewIndex(0);
         setStatus("done");
         return;
       }
@@ -213,8 +245,8 @@ export function Upload({ onConfirm, companyId }: Props) {
         setStatus("idle");
         return;
       }
-      const normalized = normalizeExtraction(data);
-      if (!normalized) {
+      const normalized = normalizeExtractions(data);
+      if (normalized.length === 0) {
         const att = await uploadPromise;
         if (att) {
           await supabase!
@@ -226,21 +258,25 @@ export function Upload({ onConfirm, companyId }: Props) {
         setStatus("idle");
         return;
       }
-      // Await the parallel upload and stamp the invoice row with the
-      // extracted payload so it's retrievable even if the user cancels.
+      // Await the parallel upload and stamp the invoice row with the full
+      // extracted payload (array) so it's retrievable even if the user cancels.
       const att = await uploadPromise;
       if (att) {
+        const avgConf = Math.round(
+          normalized.reduce((s, x) => s + x.conf, 0) / normalized.length,
+        );
         await supabase!
           .from("invoices")
           .update({
             status: "extracted",
-            extracted: normalized as unknown as Record<string, unknown>,
-            confidence: normalized.conf,
+            extracted: { invoices: normalized } as unknown as Record<string, unknown>,
+            confidence: avgConf,
           })
           .eq("id", att.invoiceId);
         setAttachment(att);
       }
-      setExtracted(normalized);
+      setExtractions(normalized);
+      setReviewIndex(0);
       setStatus("done");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -268,17 +304,25 @@ export function Upload({ onConfirm, companyId }: Props) {
     [processFile],
   );
 
+  const finishReview = useCallback(() => {
+    setExtractions([]);
+    setReviewIndex(0);
+    setAttachment(null);
+    setStatus("idle");
+  }, []);
+
   const confirm = useCallback(() => {
-    if (!extracted) return;
-    const entry = journalEntryFor(extracted.type, extracted.category);
+    const current = extractions[reviewIndex];
+    if (!current) return;
+    const entry = journalEntryFor(current.type, current.category);
     const tx: Transaction = {
       id: "t" + Date.now(),
-      company: extracted.company,
-      date: extracted.date,
-      total: extracted.type === "expense" ? -extracted.total : extracted.total,
-      vat: extracted.vat,
-      category: extracted.category,
-      type: extracted.type,
+      company: current.company,
+      date: current.date,
+      total: current.type === "expense" ? -current.total : current.total,
+      vat: current.vat,
+      category: current.category,
+      type: current.type,
       status: "verified",
       debit: formatAccount(entry.debit),
       credit: formatAccount(entry.credit),
@@ -286,10 +330,32 @@ export function Upload({ onConfirm, companyId }: Props) {
       invoiceId: attachment?.invoiceId ?? null,
     };
     onConfirm(tx);
-    setExtracted(null);
-    setAttachment(null);
-    setStatus("idle");
-  }, [extracted, attachment, onConfirm]);
+    if (reviewIndex + 1 < extractions.length) {
+      setReviewIndex((i) => i + 1);
+    } else {
+      finishReview();
+    }
+  }, [extractions, reviewIndex, attachment, onConfirm, finishReview]);
+
+  const skip = useCallback(() => {
+    if (reviewIndex + 1 < extractions.length) {
+      setReviewIndex((i) => i + 1);
+    } else {
+      finishReview();
+    }
+  }, [extractions.length, reviewIndex, finishReview]);
+
+  const updateReviewing = useCallback(
+    (next: ExtractedInvoice) => {
+      setExtractions((prev) => {
+        if (reviewIndex >= prev.length) return prev;
+        const copy = prev.slice();
+        copy[reviewIndex] = next;
+        return copy;
+      });
+    },
+    [reviewIndex],
+  );
 
   const inputStyle: CSSProperties = {
     width: "100%",
@@ -323,10 +389,10 @@ export function Upload({ onConfirm, companyId }: Props) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: extracted ? "1fr 1fr" : "1fr",
+        gridTemplateColumns: reviewing ? "1fr 1fr" : "1fr",
         gap: 24,
-        maxWidth: extracted ? "100%" : 720,
-        margin: extracted ? "0" : "0 auto",
+        maxWidth: reviewing ? "100%" : 720,
+        margin: reviewing ? "0" : "0 auto",
       }}
     >
       <input
@@ -345,7 +411,7 @@ export function Upload({ onConfirm, companyId }: Props) {
           <div style={{ position: "absolute", bottom: 20, left: 24, zIndex: 2 }}>
             <div style={{ fontSize: 20, fontWeight: 800, color: T.text }}>Scan Invoice</div>
             <div style={{ fontSize: 12, color: T.td, marginTop: 3 }}>
-              Upload image or PDF — Claude Vision extracts everything
+              Upload image or PDF — every invoice in the file is extracted
             </div>
           </div>
         </div>
@@ -565,15 +631,16 @@ export function Upload({ onConfirm, companyId }: Props) {
         </div>
       </GlassCard>
 
-      {extracted && (
+      {reviewing && (
         <ExtractedPanel
-          extracted={extracted}
-          onChange={setExtracted}
+          extracted={reviewing}
+          queueIndex={reviewIndex}
+          queueTotal={extractions.length}
+          onChange={updateReviewing}
           onConfirm={confirm}
+          onSkip={remaining > 1 ? skip : null}
           onCancel={() => {
-            setExtracted(null);
-            setAttachment(null);
-            setStatus("idle");
+            finishReview();
             setError(null);
           }}
           inputStyle={inputStyle}
@@ -586,8 +653,11 @@ export function Upload({ onConfirm, companyId }: Props) {
 
 interface ExtractedPanelProps {
   extracted: ExtractedInvoice;
+  queueIndex: number;
+  queueTotal: number;
   onChange: (next: ExtractedInvoice) => void;
   onConfirm: () => void;
+  onSkip: (() => void) | null;
   onCancel: () => void;
   inputStyle: CSSProperties;
   label: (text: string) => ReactElement;
@@ -595,12 +665,17 @@ interface ExtractedPanelProps {
 
 function ExtractedPanel({
   extracted,
+  queueIndex,
+  queueTotal,
   onChange,
   onConfirm,
+  onSkip,
   onCancel,
   inputStyle,
   label,
 }: ExtractedPanelProps) {
+  const multi = queueTotal > 1;
+  const isLast = queueIndex === queueTotal - 1;
   return (
     <GlassCard
       style={{
@@ -616,11 +691,38 @@ function ExtractedPanel({
           justifyContent: "space-between",
           alignItems: "center",
           marginBottom: 24,
+          gap: 12,
         }}
       >
-        <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: T.text }}>
-          Extracted Data
-        </h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: T.text }}>
+            Extracted Data
+          </h3>
+          {multi && (
+            <div
+              style={{
+                fontSize: 11,
+                color: T.td,
+                fontFamily: "'IBM Plex Mono'",
+                letterSpacing: 0.5,
+              }}
+            >
+              Invoice {queueIndex + 1} of {queueTotal}
+              {extracted.pageRange ? " • Page " + extracted.pageRange : ""}
+            </div>
+          )}
+          {!multi && extracted.pageRange && (
+            <div
+              style={{
+                fontSize: 11,
+                color: T.td,
+                fontFamily: "'IBM Plex Mono'",
+              }}
+            >
+              Page {extracted.pageRange}
+            </div>
+          )}
+        </div>
         <Badge color="green">{extracted.conf}% match</Badge>
       </div>
 
@@ -725,6 +827,24 @@ function ExtractedPanel({
         >
           Cancel
         </button>
+        {onSkip && (
+          <button
+            onClick={onSkip}
+            style={{
+              flex: 1,
+              padding: "14px",
+              borderRadius: 12,
+              border: "1px solid " + T.gb,
+              background: "transparent",
+              color: T.td,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Skip
+          </button>
+        )}
         <button
           onClick={onConfirm}
           style={{
@@ -740,7 +860,7 @@ function ExtractedPanel({
             boxShadow: "0 4px 20px " + T.gg,
           }}
         >
-          ✓ Confirm & Save
+          ✓ {multi && !isLast ? "Confirm & Next" : "Confirm & Save"}
         </button>
       </div>
     </GlassCard>

@@ -71,7 +71,6 @@ export interface Database {
           status: "uploaded" | "processing" | "extracted" | "confirmed" | "failed";
           extracted: Record<string, unknown> | null;
           confidence: number | null;
-          transaction_id: string | null;
           created_at: string;
           created_by: string | null;
         };
@@ -82,7 +81,6 @@ export interface Database {
           status?: "uploaded" | "processing" | "extracted" | "confirmed" | "failed";
           extracted?: Record<string, unknown> | null;
           confidence?: number | null;
-          transaction_id?: string | null;
           created_at?: string;
           created_by?: string | null;
         };
